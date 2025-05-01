@@ -1,0 +1,48 @@
+project_name: eks-auto-mode-ebs-migration-tool
+source:
+  enabled: false
+
+before:
+  hooks:
+    - go mod download
+
+builds:
+  - binary: eks-auto-mode-ebs-migration-tool
+    main: ./cmd/eks-auto-mode-ebs-migration-tool/main.go
+    targets:
+      - linux_amd64
+      - linux_arm64
+      - darwin_amd64
+      - darwin_arm64
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -v
+
+universal_binaries:
+  - replace: true
+
+archives:
+  - id: eks-auto-mode-ebs-migration-tool
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- title .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else if eq .Arch "386" }}i386
+      {{- else }}{{ .Arch }}{{ end }}
+    format: binary
+
+release:
+  prerelease: auto
+
+checksum:
+  name_template: "{{ .ProjectName }}_{{ .Version }}_sha256_checksums.txt"
+  algorithm: sha256
+
+changelog:
+  sort: asc
+  use: github
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
