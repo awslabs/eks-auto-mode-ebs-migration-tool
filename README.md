@@ -7,24 +7,31 @@ The `eks-auto-mode-ebs-migration-tool` is used to migrate a Persistent Volume Cl
 new StorageClass.**
 
 ```bash
-% ./eks-auto-mode-ebs-migration-tool --help                                                                                                                                     main
+% ./eks-auto-mode-ebs-migration-tool --help
+The eks-auto-mode-ebs-migration-tool is used to migrate a Persistent Volume Claim from a
+standard EBS CSI StorageClass (ebs.csi.aws.com) to the EKS Auto EBS CSI StorageClass
+(ebs.csi.eks.amazonaws.com) or vice versa. To do this, it must delete the PVC/PV that
+are currently in use and replace them with new copies updated to use the new StorageClass.
+Workloads using the volume must be scaled down or terminated before use, as the EBS Volume
+must be detached prior to migration.
+
 Usage of ./eks-auto-mode-ebs-migration-tool:
   -attribution
-        Show attribution
+    	Show attribution
   -cluster-name string
-        Name of the cluster
+    	Name of the cluster
   -dry-run
-        Run in dry-run mode where validations are performed, but no mutations occur (default true)
+    	Run in dry-run mode where validations are performed, but no mutations occur (default true)
   -kubeconfig string
-        Absolute path to the kubeconfig file (default "~/.kube/config")
+    	Absolute path to the kubeconfig file (default "~/.kube/config")
   -namespace string
-        Namespace for the PVC (default "default")
+    	Namespace for the PVC (default "default")
   -pvc-name string
-        Name of the PVC
+    	Name of the PVC
   -snapshot
-        Create a snapshot of the EBS volume prior to making any changes (default true)
+    	Create a snapshot of the EBS volume prior to making any changes (default true)
   -storageclass string
-        New storage class to migrate to
+    	New storage class to migrate to
   -yes
     	Override the prompt to accept migration if all validations have passed
 ```
