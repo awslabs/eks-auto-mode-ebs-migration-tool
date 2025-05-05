@@ -30,6 +30,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"log"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -48,6 +49,7 @@ type Migrator struct {
 	cfg                        Config
 	ec2                        EC2Client
 	newStorageClassProvisioner string
+	oldStorageClassProvisioner string
 	oldVolumeName              string
 	eks                        EKSClient
 	// originalPVC/PV are the unmodified PVC/PV that we will be replacing
@@ -82,6 +84,8 @@ func (m *Migrator) ValidatePreconditions(ctx context.Context) error {
 	return nil
 }
 
+var validSCProvisionerRegexp = regexp.MustCompile(`[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*`)
+
 func (m *Migrator) validateK8s(ctx context.Context) error {
 	// ensure our storage class exists, and pull the provisioner off of it
 	newSc, err := k8s.GetAndValidateStorageClass(ctx, m.kubeClient, m.cfg.NewStorageClassName)
@@ -110,6 +114,7 @@ func (m *Migrator) validateK8s(ctx context.Context) error {
 		return fmt.Errorf("unable to get old storage class, %s", err)
 	}
 	m.originalStorageClass = oldSc
+	m.oldStorageClassProvisioner = oldSc.Provisioner
 
 	// update our volume name since we don't know it yet
 	m.oldVolumeName = pvc.Spec.VolumeName
@@ -187,6 +192,7 @@ func (m *Migrator) validateEC2(ctx context.Context) (err error) {
 		}
 	}
 
+	log.Printf("Validating ability to modify volume tags on %s", aws.ToString(m.volume.VolumeId))
 	// make a dry-run call to see if we can create tags on the volume
 	_, err = m.ec2.CreateTags(ctx, &ec2.CreateTagsInput{
 		Resources: []string{aws.ToString(m.volume.VolumeId)},
@@ -207,11 +213,13 @@ func (m *Migrator) validateEC2(ctx context.Context) (err error) {
 }
 
 func (m *Migrator) validateEKS(ctx context.Context) error {
+	log.Printf("validating that cluster name %s exists", m.cfg.ClusterName)
 	// validate that the cluster name is real
-	_, err := m.eks.DescribeCluster(ctx, &eks.DescribeClusterInput{Name: &m.cfg.ClusterName})
+	c, err := m.eks.DescribeCluster(ctx, &eks.DescribeClusterInput{Name: &m.cfg.ClusterName})
 	if err != nil {
 		return fmt.Errorf("unable to find cluster %s", m.cfg.ClusterName)
 	}
+	log.Printf("Found cluster %s", aws.ToString(c.Cluster.Arn))
 	return nil
 }
 
@@ -264,6 +272,9 @@ func (m *Migrator) Execute(ctx context.Context) error {
 		if v == m.oldStorageClassName {
 			pvc.Annotations[k] = m.cfg.NewStorageClassName
 		}
+		if v == m.oldStorageClassProvisioner {
+			pvc.Annotations[k] = m.newStorageClassProvisioner
+		}
 	}
 	// and delete the annotations so the controller won't put it in the terminal "Lost" already and will
 	// instead be in "Pending" status
@@ -282,6 +293,9 @@ func (m *Migrator) Execute(ctx context.Context) error {
 	for k, v := range pv.Annotations {
 		if v == m.oldStorageClassName {
 			pv.Annotations[k] = m.cfg.NewStorageClassName
+		}
+		if v == m.oldStorageClassProvisioner {
+			pvc.Annotations[k] = m.newStorageClassProvisioner
 		}
 	}
 
@@ -302,7 +316,7 @@ func (m *Migrator) Execute(ctx context.Context) error {
 	}
 
 	// wait for the PVC to be removed
-	if err := k8s.WaitForNotFound(ctx, func() error {
+	if err := k8s.WaitForNotFound(ctx, fmt.Sprintf("PVC %s", m.cfg.PVCName), func() error {
 		_, err := m.kubeClient.CoreV1().PersistentVolumeClaims(m.cfg.Namespace).Get(ctx, m.cfg.PVCName, metav1.GetOptions{})
 		return err
 	}); err != nil {
@@ -317,7 +331,7 @@ func (m *Migrator) Execute(ctx context.Context) error {
 		log.Printf("unable to delete volume, continuing, %s", err)
 	}
 	// wait for the PV to be removed
-	if err := k8s.WaitForNotFound(ctx, func() error {
+	if err := k8s.WaitForNotFound(ctx, fmt.Sprintf("PV %s", pv.Name), func() error {
 		_, err := m.kubeClient.CoreV1().PersistentVolumes().Get(ctx, pv.Name, metav1.GetOptions{})
 		return err
 	}); err != nil {
@@ -326,6 +340,7 @@ func (m *Migrator) Execute(ctx context.Context) error {
 
 	// create our new PVC
 	newPVC, err := m.kubeClient.CoreV1().PersistentVolumeClaims(m.cfg.Namespace).Create(ctx, pvc, metav1.CreateOptions{})
+	log.Printf("created PVC with annotations %+v", pvc.Annotations)
 	if err != nil {
 		return fmt.Errorf("unable to create new PVC, %s", err)
 	}

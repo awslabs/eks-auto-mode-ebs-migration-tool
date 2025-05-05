@@ -18,10 +18,12 @@ package migrator
 import (
 	"context"
 	"errors"
+	"fmt"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	"github.com/aws/aws-sdk-go-v2/service/eks"
+	ekstypes "github.com/aws/aws-sdk-go-v2/service/eks/types"
 	"github.com/aws/smithy-go"
 	authv1 "k8s.io/api/authorization/v1"
 	v1 "k8s.io/api/core/v1"
@@ -84,7 +86,8 @@ func TestMigratorHappyPath(t *testing.T) {
 	oldPVName := "pvc-old-pvc-uid"
 	newPVName := "pvc-new-pvc-uid"
 	snapshotID := "snap-12345678901234567"
-
+	oldStorageProvisionerName := "ebs.csi.aws.com"
+	newStorageProvisionerName := "ebs.csi.eks.amazonaws.com"
 	// Create volume binding mode for storage classes
 	waitForFirstConsumer := storagev1.VolumeBindingWaitForFirstConsumer
 
@@ -93,7 +96,7 @@ func TestMigratorHappyPath(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name: oldStorageClassName,
 		},
-		Provisioner:       "ebs.csi.aws.com",
+		Provisioner:       oldStorageProvisionerName,
 		VolumeBindingMode: &waitForFirstConsumer,
 	}
 
@@ -101,7 +104,7 @@ func TestMigratorHappyPath(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name: newStorageClassName,
 		},
-		Provisioner:       "ebs.csi.eks.amazonaws.com",
+		Provisioner:       newStorageProvisionerName,
 		VolumeBindingMode: &waitForFirstConsumer,
 	}
 
@@ -116,8 +119,8 @@ func TestMigratorHappyPath(t *testing.T) {
 				"pv.kubernetes.io/bound-by-controller":          "yes",
 				"volume.kubernetes.io/selected-node":            "node-1",
 				"volume.beta.kubernetes.io/storage-class":       oldStorageClassName,
-				"volume.beta.kubernetes.io/storage-provisioner": oldStorageClassName,
-				"volume.kubernetes.io/storage-provisioner":      oldStorageClassName,
+				"volume.beta.kubernetes.io/storage-provisioner": oldStorageProvisionerName,
+				"volume.kubernetes.io/storage-provisioner":      oldStorageProvisionerName,
 			},
 		},
 		Spec: v1.PersistentVolumeClaimSpec{
@@ -284,7 +287,11 @@ func TestMigratorHappyPath(t *testing.T) {
 	// Create mock EKS client
 	mockEKS := &mockEKSClient{
 		DescribeClusterFunc: func(ctx context.Context, params *eks.DescribeClusterInput, optFns ...func(*eks.Options)) (*eks.DescribeClusterOutput, error) {
-			return &eks.DescribeClusterOutput{}, nil
+			return &eks.DescribeClusterOutput{
+				Cluster: &ekstypes.Cluster{
+					Arn: aws.String(" arn:aws:eks:us-west-2:123456789012:cluster/adorable-bluegrass-walrus"),
+				},
+			}, nil
 		},
 	}
 
@@ -358,6 +365,9 @@ func TestMigratorHappyPath(t *testing.T) {
 		if v == oldStorageClassName {
 			t.Errorf("Expected translation of PVC annotation %s: %s to %s", k, v, newStorageClassName)
 		}
+		if v == oldStorageProvisionerName {
+			t.Errorf("Expected translation of PVC annotation %s: %s to %s", k, v, newStorageProvisionerName)
+		}
 	}
 	if _, exists := createdPVC.Annotations["pv.kubernetes.io/bind-completed"]; exists {
 		t.Error("New PVC should not have bind-completed annotation")
@@ -382,6 +392,9 @@ func TestMigratorHappyPath(t *testing.T) {
 	for k, v := range createdPV.Annotations {
 		if v == oldStorageClassName {
 			t.Errorf("Expected translation of PV annotation %s: %s to %s", k, v, newStorageClassName)
+		}
+		if v == oldStorageProvisionerName {
+			t.Errorf("Expected translation of PV annotation %s: %s to %s", k, v, newStorageProvisionerName)
 		}
 	}
 
@@ -672,7 +685,11 @@ func TestMigratorNoTagging(t *testing.T) {
 	// Create mock EKS client
 	mockEKS := &mockEKSClient{
 		DescribeClusterFunc: func(ctx context.Context, params *eks.DescribeClusterInput, optFns ...func(*eks.Options)) (*eks.DescribeClusterOutput, error) {
-			return &eks.DescribeClusterOutput{}, nil
+			return &eks.DescribeClusterOutput{
+				Cluster: &ekstypes.Cluster{
+					Arn: aws.String(" arn:aws:eks:us-west-2:123456789012:cluster/adorable-bluegrass-walrus"),
+				},
+			}, nil
 		},
 	}
 
@@ -823,7 +840,11 @@ func TestValidateEKS(t *testing.T) {
 					if *params.Name != "test-cluster" {
 						return nil, errors.New("cluster not found")
 					}
-					return &eks.DescribeClusterOutput{}, nil
+					return &eks.DescribeClusterOutput{
+						Cluster: &ekstypes.Cluster{
+							Arn: aws.String(fmt.Sprintf(" arn:aws:eks:us-west-2:123456789012:cluster/%s", aws.ToString(params.Name))),
+						},
+					}, nil
 				},
 			}
 
@@ -1499,7 +1520,11 @@ func TestExecuteWithFailedPVCDeletion(t *testing.T) {
 		},
 		eks: &mockEKSClient{
 			DescribeClusterFunc: func(ctx context.Context, params *eks.DescribeClusterInput, optFns ...func(*eks.Options)) (*eks.DescribeClusterOutput, error) {
-				return &eks.DescribeClusterOutput{}, nil
+				return &eks.DescribeClusterOutput{
+					Cluster: &ekstypes.Cluster{
+						Arn: aws.String(" arn:aws:eks:us-west-2:123456789012:cluster/adorable-bluegrass-walrus"),
+					},
+				}, nil
 			},
 		},
 		ec2:         mockEC2,

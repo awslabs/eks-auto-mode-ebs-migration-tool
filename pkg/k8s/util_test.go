@@ -280,7 +280,7 @@ func TestWaitForNotFound(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), tt.contextTimeout)
 			defer cancel()
 
-			err := WaitForNotFound(ctx, tt.callbackFunc())
+			err := WaitForNotFound(ctx, "name of object", tt.callbackFunc())
 
 			if tt.wantErr && err == nil {
 				t.Errorf("WaitForNotFound() expected an error but got nil")
