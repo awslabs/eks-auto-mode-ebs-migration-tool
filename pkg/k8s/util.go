@@ -84,13 +84,13 @@ func DryRunRbac(ctx context.Context, cs kubernetes.Interface, verb string, names
 
 // WaitForNotFound calls f repeatedly, returning nil when it returns a not found message.
 // It will wait 1 second between attempts and will return an error if the context is canceled.
-func WaitForNotFound(ctx context.Context, f func() error) error {
+func WaitForNotFound(ctx context.Context, name string, f func() error) error {
 	for {
 		err := f()
 		if err != nil && kerrors.IsNotFound(err) {
 			return nil
 		}
-		log.Printf("waiting for deletion")
+		log.Printf("waiting for deletion of %s", name)
 		timer := time.NewTimer(1 * time.Second)
 		select {
 		case <-timer.C:
