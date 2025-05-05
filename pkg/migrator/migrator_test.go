@@ -112,10 +112,12 @@ func TestMigratorHappyPath(t *testing.T) {
 			Namespace: testNamespace,
 			UID:       oldPVCUID,
 			Annotations: map[string]string{
-				"pv.kubernetes.io/bind-completed":         "yes",
-				"pv.kubernetes.io/bound-by-controller":    "yes",
-				"volume.kubernetes.io/selected-node":      "node-1",
-				"volume.beta.kubernetes.io/storage-class": oldStorageClassName,
+				"pv.kubernetes.io/bind-completed":               "yes",
+				"pv.kubernetes.io/bound-by-controller":          "yes",
+				"volume.kubernetes.io/selected-node":            "node-1",
+				"volume.beta.kubernetes.io/storage-class":       oldStorageClassName,
+				"volume.beta.kubernetes.io/storage-provisioner": oldStorageClassName,
+				"volume.kubernetes.io/storage-provisioner":      oldStorageClassName,
 			},
 		},
 		Spec: v1.PersistentVolumeClaimSpec{
@@ -352,6 +354,11 @@ func TestMigratorHappyPath(t *testing.T) {
 	if *createdPVC.Spec.StorageClassName != newStorageClassName {
 		t.Errorf("Expected new PVC storage class to be %s, got %s", newStorageClassName, *createdPVC.Spec.StorageClassName)
 	}
+	for k, v := range createdPVC.Annotations {
+		if v == oldStorageClassName {
+			t.Errorf("Expected translation of PVC annotation %s: %s to %s", k, v, newStorageClassName)
+		}
+	}
 	if _, exists := createdPVC.Annotations["pv.kubernetes.io/bind-completed"]; exists {
 		t.Error("New PVC should not have bind-completed annotation")
 	}
@@ -371,6 +378,11 @@ func TestMigratorHappyPath(t *testing.T) {
 	}
 	if createdPV.Spec.CSI.VolumeHandle != volumeID {
 		t.Errorf("Expected new PV volume handle to be %s, got %s", volumeID, createdPV.Spec.CSI.VolumeHandle)
+	}
+	for k, v := range createdPV.Annotations {
+		if v == oldStorageClassName {
+			t.Errorf("Expected translation of PV annotation %s: %s to %s", k, v, newStorageClassName)
+		}
 	}
 
 	// Verify finalizers were updated

@@ -378,7 +378,7 @@ func waitOnSnapshot(ctx context.Context, client EC2Client, snapshotID *string) e
 			return fmt.Errorf("describing snapshot, %w", err)
 		}
 		if len(rsp.Snapshots) != 1 {
-			return fmt.Errorf("snapshot node found")
+			return fmt.Errorf("snapshot not found")
 		}
 
 		currentStatus := rsp.Snapshots[0].State
