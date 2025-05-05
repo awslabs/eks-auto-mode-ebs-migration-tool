@@ -6,6 +6,9 @@ The `eks-auto-mode-ebs-migration-tool` is used to migrate a Persistent Volume Cl
 **The migration process requires deleting the existing PersistentVolumeClaim/PersistentVolume and re-creating them with the
 new StorageClass.**
 
+If running in a cluster with mixed compute (Auto Mode & Non Auto Mode Nodes), ensure that you have appropriate an appropriate
+NodeSelector or required Node Affinity to cause Pods with Auto Mode migrated volumes to only schedule against Auto Mode nodes.
+
 ```bash
 % ./eks-auto-mode-ebs-migration-tool --help
 The eks-auto-mode-ebs-migration-tool is used to migrate a Persistent Volume Claim from a
