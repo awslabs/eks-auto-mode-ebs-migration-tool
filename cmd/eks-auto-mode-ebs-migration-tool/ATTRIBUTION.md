@@ -220,8 +220,8 @@ The Amazon eks-auto-mode-ebs-migration-tool Product includes the following third
 ## github.com/aws/aws-sdk-go-v2/config
 
 * Name: github.com/aws/aws-sdk-go-v2/config
-* Version: v1.29.10
-* License: [Apache-2.0](https://github.com/aws/aws-sdk-go-v2/blob/config/v1.29.10/config/LICENSE.txt)
+* Version: v1.29.14
+* License: [Apache-2.0](https://github.com/aws/aws-sdk-go-v2/blob/config/v1.29.14/config/LICENSE.txt)
 
 ```
 
@@ -432,8 +432,8 @@ The Amazon eks-auto-mode-ebs-migration-tool Product includes the following third
 ## github.com/aws/aws-sdk-go-v2/credentials
 
 * Name: github.com/aws/aws-sdk-go-v2/credentials
-* Version: v1.17.63
-* License: [Apache-2.0](https://github.com/aws/aws-sdk-go-v2/blob/credentials/v1.17.63/credentials/LICENSE.txt)
+* Version: v1.17.67
+* License: [Apache-2.0](https://github.com/aws/aws-sdk-go-v2/blob/credentials/v1.17.67/credentials/LICENSE.txt)
 
 ```
 
@@ -1530,8 +1530,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ## github.com/aws/aws-sdk-go-v2/service/ec2
 
 * Name: github.com/aws/aws-sdk-go-v2/service/ec2
-* Version: v1.210.1
-* License: [Apache-2.0](https://github.com/aws/aws-sdk-go-v2/blob/service/ec2/v1.210.1/service/ec2/LICENSE.txt)
+* Version: v1.213.0
+* License: [Apache-2.0](https://github.com/aws/aws-sdk-go-v2/blob/service/ec2/v1.213.0/service/ec2/LICENSE.txt)
 
 ```
 
@@ -2378,8 +2378,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ## github.com/aws/aws-sdk-go-v2/service/sso
 
 * Name: github.com/aws/aws-sdk-go-v2/service/sso
-* Version: v1.25.1
-* License: [Apache-2.0](https://github.com/aws/aws-sdk-go-v2/blob/service/sso/v1.25.1/service/sso/LICENSE.txt)
+* Version: v1.25.3
+* License: [Apache-2.0](https://github.com/aws/aws-sdk-go-v2/blob/service/sso/v1.25.3/service/sso/LICENSE.txt)
 
 ```
 
@@ -2590,8 +2590,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ## github.com/aws/aws-sdk-go-v2/service/ssooidc
 
 * Name: github.com/aws/aws-sdk-go-v2/service/ssooidc
-* Version: v1.29.2
-* License: [Apache-2.0](https://github.com/aws/aws-sdk-go-v2/blob/service/ssooidc/v1.29.2/service/ssooidc/LICENSE.txt)
+* Version: v1.30.1
+* License: [Apache-2.0](https://github.com/aws/aws-sdk-go-v2/blob/service/ssooidc/v1.30.1/service/ssooidc/LICENSE.txt)
 
 ```
 
@@ -2802,8 +2802,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ## github.com/aws/aws-sdk-go-v2/service/sts
 
 * Name: github.com/aws/aws-sdk-go-v2/service/sts
-* Version: v1.33.17
-* License: [Apache-2.0](https://github.com/aws/aws-sdk-go-v2/blob/service/sts/v1.33.17/service/sts/LICENSE.txt)
+* Version: v1.33.19
+* License: [Apache-2.0](https://github.com/aws/aws-sdk-go-v2/blob/service/sts/v1.33.19/service/sts/LICENSE.txt)
 
 ```
 
