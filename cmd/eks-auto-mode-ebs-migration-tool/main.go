@@ -37,6 +37,14 @@ import (
 //go:embed ATTRIBUTION.md
 var attribution string
 
+// set via linker flags
+var (
+	version = "dev"
+	commit  = ""
+	date    = ""
+	builtBy = "manual"
+)
+
 func usage() {
 	fmt.Fprintf(flag.CommandLine.Output(), `The eks-auto-mode-ebs-migration-tool is used to migrate a Persistent Volume Claim from a 
 standard EBS CSI StorageClass (ebs.csi.aws.com) to the EKS Auto EBS CSI StorageClass 
@@ -65,11 +73,19 @@ func main() {
 	dryRun := flag.Bool("dry-run", true, "Run in dry-run mode where validations are performed, but no mutations occur")
 	showAttribution := flag.Bool("attribution", false, "Show attribution")
 	yes := flag.Bool("yes", false, "Override the prompt to accept migration if all validations have passed")
+	versionFlag := flag.Bool("version", false, "Print the version and exit")
 	flag.Usage = usage
 	flag.Parse()
 
 	if *showAttribution {
 		fmt.Println(attribution)
+		os.Exit(0)
+	}
+	if *versionFlag {
+		fmt.Printf("eks-auto-mode-ebs-migration-tool %s\n", version)
+		fmt.Printf("commit: %s\n", commit)
+		fmt.Printf("built at: %s\n", date)
+		fmt.Printf("built by: %s\n", builtBy)
 		os.Exit(0)
 	}
 	if *dryRun {

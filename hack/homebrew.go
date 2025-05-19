@@ -33,7 +33,7 @@ type Data struct {
 }
 
 // Example Usage:
-// go run hack/homebrew.go --version 0.6.0 > ../aws-homebrew-tap/bottle-configs/eks-node-viewer.json
+// go run hack/homebrew.go --version 0.6.0 > ../aws-homebrew-tap/bottle-configs/eks-auto-mode-ebs-migration-tool.json
 
 func main() {
 	var data Data
@@ -44,11 +44,11 @@ func main() {
 	}
 
 	bconfig, err := template.New("bottle-config").Parse(`{
-    "name": "eks-node-viewer",
+    "name": "eks-auto-mode-ebs-migration-tool",
     "version": "{{.Version}}",
-    "bin": "eks-node-viewer",
+    "bin": "eks-auto-mode-ebs-migration-tool",
     "bottle": {
-        "root_url": "https://github.com/awslabs/eks-node-viewer/releases/download/v{{.Version}}/eks-node-viewer",
+        "root_url": "https://github.com/awslabs/eks-auto-mode-ebs-migration-tool/releases/download/v{{.Version}}/eks-auto-mode-ebs-migration-tool",
         "sha256": {
             "sierra": "{{.DarwinAll}}",
             "linux": "{{.LinuxX64}}",
@@ -62,7 +62,7 @@ func main() {
 	}
 
 	// fetch and parse the checksums
-	req, err := http.Get(fmt.Sprintf(`https://github.com/awslabs/eks-node-viewer/releases/download/v%s/eks-node-viewer_%s_sha256_checksums.txt`, data.Version, data.Version))
+	req, err := http.Get(fmt.Sprintf(`https://github.com/awslabs/eks-auto-mode-ebs-migration-tool/releases/download/v%s/eks-auto-mode-ebs-migration-tool_%s_sha256_checksums.txt`, data.Version, data.Version))
 	if err != nil {
 		log.Fatalf("fetching checksums, %s", err)
 	}
@@ -71,19 +71,17 @@ func main() {
 	for sc.Scan() {
 		fields := strings.Fields(sc.Text())
 		if len(fields) != 2 {
-			log.Fatalf("unavble to parse line, %q", sc.Text())
+			log.Fatalf("unable to parse line, %q", sc.Text())
 		}
 		hash := fields[0]
 		bin := fields[1]
 		switch bin {
-		case "eks-node-viewer_Darwin_all":
+		case "eks-auto-mode-ebs-migration-tool_Darwin_all":
 			data.DarwinAll = hash
-		case "eks-node-viewer_Linux_arm64":
+		case "eks-auto-mode-ebs-migration-tool_Linux_arm64":
 			data.LinuxArm = hash
-		case "eks-node-viewer_Linux_x86_64":
+		case "eks-auto-mode-ebs-migration-tool_Linux_x86_64":
 			data.LinuxX64 = hash
-		case "eks-node-viewer_Windows_x86_64.exe":
-			data.WindowsX64 = hash
 		default:
 			log.Fatalf("unsupported bin, %s", bin)
 		}
