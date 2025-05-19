@@ -10,7 +10,7 @@ require (
 	github.com/aws/smithy-go v1.22.3
 	k8s.io/api v0.33.1
 	k8s.io/apimachinery v0.33.1
-	k8s.io/client-go v0.33.0
+	k8s.io/client-go v0.33.1
 )
 
 require (
