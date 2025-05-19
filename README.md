@@ -48,6 +48,16 @@ The migration process validates and requires that:
 - The caller needs appropriate Kubernetes permissions to Create/Delete the PersistentVolumeClaim and PersistentVolume.
 - The caller needs appropriate AWS IAM permissions to call `DescribeVolume`, and `CreateTags` on the EBS Volume as well as optionally `CreateSnapshot`,
 
+
+# Installation
+
+Binaries are available on the [releases](https://github.com/awslabs/eks-auto-mode-ebs-migration-tool/releases) page, or you can install via Homebrew
+
+```bash
+brew tap aws/tap
+brew install eks-auto-mode-ebs-migration-tool
+```
+
 # Sample Usage
 
 First, run the tool in dry-run mode (the default) to perform all validation checks:
