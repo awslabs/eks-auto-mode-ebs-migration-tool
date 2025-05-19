@@ -36,6 +36,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/fake"
 	cgtesting "k8s.io/client-go/testing"
+	"k8s.io/csi-translation-lib/plugins"
 	"strings"
 	"testing"
 )
@@ -306,6 +307,346 @@ func TestMigratorHappyPath(t *testing.T) {
 		},
 		ec2: mockEC2,
 		eks: mockEKS,
+	}
+
+	// Test the happy path
+	ctx := context.Background()
+
+	// Step 1: Validate preconditions
+	err := m.ValidatePreconditions(ctx)
+	if err != nil {
+		t.Fatalf("ValidatePreconditions failed: %v", err)
+	}
+
+	// Verify that the migrator has been properly initialized
+	if m.originalPVC == nil {
+		t.Fatal("originalPVC should be set after validation")
+	}
+	if m.originalPV == nil {
+		t.Fatal("originalPV should be set after validation")
+	}
+	if m.oldStorageClassName != oldStorageClassName {
+		t.Fatalf("oldStorageClassName should be %s, got %s", oldStorageClassName, m.oldStorageClassName)
+	}
+	if m.newStorageClassProvisioner != "ebs.csi.eks.amazonaws.com" {
+		t.Fatalf("newStorageClassProvisioner should be ebs.csi.eks.amazonaws.com, got %s", m.newStorageClassProvisioner)
+	}
+
+	// Step 2: Create snapshot
+	err = m.PerformSnapshot(ctx)
+	if err != nil {
+		t.Fatalf("PerformSnapshot failed: %v", err)
+	}
+
+	// Step 3: Execute migration
+	err = m.Execute(ctx)
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+
+	// Verify that resources were deleted and recreated
+	if !deletedPVC {
+		t.Error("PVC was not deleted")
+	}
+	if !deletedPV {
+		t.Error("PV was not deleted")
+	}
+
+	// Verify the new PVC
+	if createdPVC == nil {
+		t.Fatal("New PVC was not created")
+	}
+	if createdPVC.Name != testPVCName {
+		t.Errorf("Expected new PVC name to be %s, got %s", testPVCName, createdPVC.Name)
+	}
+	if *createdPVC.Spec.StorageClassName != newStorageClassName {
+		t.Errorf("Expected new PVC storage class to be %s, got %s", newStorageClassName, *createdPVC.Spec.StorageClassName)
+	}
+	for k, v := range createdPVC.Annotations {
+		if v == oldStorageClassName {
+			t.Errorf("Expected translation of PVC annotation %s: %s to %s", k, v, newStorageClassName)
+		}
+		if v == oldStorageProvisionerName {
+			t.Errorf("Expected translation of PVC annotation %s: %s to %s", k, v, newStorageProvisionerName)
+		}
+	}
+	if _, exists := createdPVC.Annotations["pv.kubernetes.io/bind-completed"]; exists {
+		t.Error("New PVC should not have bind-completed annotation")
+	}
+
+	// Verify the new PV
+	if createdPV == nil {
+		t.Fatal("New PV was not created")
+	}
+	if createdPV.Name != newPVName {
+		t.Errorf("Expected new PV name to be %s, got %s", newPVName, createdPV.Name)
+	}
+	if createdPV.Spec.StorageClassName != newStorageClassName {
+		t.Errorf("Expected new PV storage class to be %s, got %s", newStorageClassName, createdPV.Spec.StorageClassName)
+	}
+	if createdPV.Spec.CSI.Driver != "ebs.csi.eks.amazonaws.com" {
+		t.Errorf("Expected new PV CSI driver to be ebs.csi.eks.amazonaws.com, got %s", createdPV.Spec.CSI.Driver)
+	}
+	if createdPV.Spec.CSI.VolumeHandle != volumeID {
+		t.Errorf("Expected new PV volume handle to be %s, got %s", volumeID, createdPV.Spec.CSI.VolumeHandle)
+	}
+	for k, v := range createdPV.Annotations {
+		if v == oldStorageClassName {
+			t.Errorf("Expected translation of PV annotation %s: %s to %s", k, v, newStorageClassName)
+		}
+		if v == oldStorageProvisionerName {
+			t.Errorf("Expected translation of PV annotation %s: %s to %s", k, v, newStorageProvisionerName)
+		}
+	}
+
+	// Verify finalizers were updated
+	foundUpdatedFinalizer := false
+	for _, finalizer := range createdPV.Finalizers {
+		if finalizer == "external-attacher/ebs-csi-eks-amazonaws-com" {
+			foundUpdatedFinalizer = true
+			break
+		}
+	}
+	if !foundUpdatedFinalizer {
+		t.Error("New PV should have updated finalizer for the new CSI driver")
+	}
+}
+
+func TestMigratorHappyPathInTreeEBS(t *testing.T) {
+	// Setup test data
+	testNamespace := "default"
+	testPVCName := "test-pvc"
+	oldStorageClassName := "ebs-sc"
+	newStorageClassName := "ebs-auto-sc"
+	clusterName := "test-cluster"
+	volumeID := "vol-12345678901234567"
+	oldPVCUID := types.UID("old-pvc-uid")
+	newPVCUID := types.UID("new-pvc-uid")
+	oldPVName := "pvc-old-pvc-uid"
+	newPVName := "pvc-new-pvc-uid"
+	snapshotID := "snap-12345678901234567"
+	oldStorageProvisionerName := "kubernetes.io/aws-ebs"
+	newStorageProvisionerName := "ebs.csi.eks.amazonaws.com"
+	// Create volume binding mode for storage classes
+	waitForFirstConsumer := storagev1.VolumeBindingWaitForFirstConsumer
+
+	// Create storage classes
+	oldSC := &storagev1.StorageClass{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: oldStorageClassName,
+		},
+		Provisioner:       oldStorageProvisionerName,
+		VolumeBindingMode: &waitForFirstConsumer,
+	}
+
+	newSC := &storagev1.StorageClass{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: newStorageClassName,
+		},
+		Provisioner:       newStorageProvisionerName,
+		VolumeBindingMode: &waitForFirstConsumer,
+	}
+
+	// Create PVC
+	pvc := &v1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testPVCName,
+			Namespace: testNamespace,
+			UID:       oldPVCUID,
+			Annotations: map[string]string{
+				"pv.kubernetes.io/bind-completed":               "yes",
+				"pv.kubernetes.io/bound-by-controller":          "yes",
+				"volume.kubernetes.io/selected-node":            "node-1",
+				"volume.beta.kubernetes.io/storage-class":       oldStorageClassName,
+				"volume.beta.kubernetes.io/storage-provisioner": oldStorageProvisionerName,
+				"volume.kubernetes.io/storage-provisioner":      oldStorageProvisionerName,
+			},
+		},
+		Spec: v1.PersistentVolumeClaimSpec{
+			StorageClassName: &oldStorageClassName,
+			VolumeName:       oldPVName,
+			AccessModes:      []v1.PersistentVolumeAccessMode{v1.ReadWriteOnce},
+			Resources: v1.VolumeResourceRequirements{
+				Requests: v1.ResourceList{
+					v1.ResourceStorage: *resource.NewQuantity(10*1024*1024*1024, resource.BinarySI),
+				},
+			},
+		},
+	}
+
+	// Create PV
+	pv := &v1.PersistentVolume{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: oldPVName,
+			Annotations: map[string]string{
+				"pv.kubernetes.io/provisioned-by":         oldStorageClassName,
+				"volume.beta.kubernetes.io/storage-class": oldStorageClassName,
+			},
+			Finalizers: []string{"kubernetes.io/pv-protection", "external-attacher/ebs-csi-aws-com"},
+		},
+		Spec: v1.PersistentVolumeSpec{
+			StorageClassName:              oldStorageClassName,
+			PersistentVolumeReclaimPolicy: v1.PersistentVolumeReclaimRetain,
+			AccessModes:                   []v1.PersistentVolumeAccessMode{v1.ReadWriteOnce},
+			Capacity: v1.ResourceList{
+				v1.ResourceStorage: *resource.NewQuantity(10*1024*1024*1024, resource.BinarySI),
+			},
+			ClaimRef: &v1.ObjectReference{
+				Kind:            "PersistentVolumeClaim",
+				Namespace:       testNamespace,
+				Name:            testPVCName,
+				UID:             oldPVCUID,
+				ResourceVersion: "1",
+			},
+			PersistentVolumeSource: v1.PersistentVolumeSource{
+				AWSElasticBlockStore: &v1.AWSElasticBlockStoreVolumeSource{
+					VolumeID:  volumeID,
+					FSType:    "ext4",
+					Partition: 0,
+					ReadOnly:  false,
+				},
+			},
+		},
+	}
+
+	// Create fake Kubernetes client
+	kubeClient := fake.NewClientset(pvc, pv, oldSC, newSC)
+
+	// Track created/deleted resources
+	var createdPVC *v1.PersistentVolumeClaim
+	var createdPV *v1.PersistentVolume
+	var deletedPVC, deletedPV bool
+
+	// allow everything
+	kubeClient.PrependReactor("create", "selfsubjectaccessreviews", func(action cgtesting.Action) (bool, runtime.Object, error) {
+		return true, &authv1.SelfSubjectAccessReview{
+			Status: authv1.SubjectAccessReviewStatus{
+				Allowed: true,
+			},
+		}, nil
+	})
+	// Setup reactor for PVC creation
+	kubeClient.PrependReactor("create", "persistentvolumeclaims", func(action cgtesting.Action) (bool, runtime.Object, error) {
+		createAction := action.(cgtesting.CreateAction)
+		obj := createAction.GetObject().(*v1.PersistentVolumeClaim)
+		obj.UID = newPVCUID
+		obj.ResourceVersion = "2"
+		createdPVC = obj
+		return false, nil, nil
+	})
+
+	// Setup reactor for PV creation
+	kubeClient.PrependReactor("create", "persistentvolumes", func(action cgtesting.Action) (bool, runtime.Object, error) {
+		createAction := action.(cgtesting.CreateAction)
+		obj := createAction.GetObject().(*v1.PersistentVolume)
+		obj.ResourceVersion = "2"
+		createdPV = obj
+		return false, nil, nil
+	})
+
+	// Setup reactor for PVC deletion
+	kubeClient.PrependReactor("delete", "persistentvolumeclaims", func(action cgtesting.Action) (bool, runtime.Object, error) {
+		deletedPVC = true
+		return false, nil, nil
+	})
+
+	// Setup reactor for PV deletion
+	kubeClient.PrependReactor("delete", "persistentvolumes", func(action cgtesting.Action) (bool, runtime.Object, error) {
+		deletedPV = true
+		return false, nil, nil
+	})
+
+	// Setup reactor for get after delete to simulate resource being gone
+	kubeClient.PrependReactor("get", "persistentvolumeclaims", func(action cgtesting.Action) (bool, runtime.Object, error) {
+		if deletedPVC {
+			return true, nil, kerrors.NewNotFound(schema.GroupResource{Group: "", Resource: "persistentvolumeclaims"}, testPVCName)
+		}
+		return false, nil, nil
+	})
+
+	kubeClient.PrependReactor("get", "persistentvolumes", func(action cgtesting.Action) (bool, runtime.Object, error) {
+		if deletedPV {
+			return true, nil, kerrors.NewNotFound(schema.GroupResource{Group: "", Resource: "persistentvolumes"}, oldPVName)
+		}
+		return false, nil, nil
+	})
+
+	// Create mock EC2 client
+	mockEC2 := &mockEC2Client{
+		DescribeVolumesFunc: func(ctx context.Context, params *ec2.DescribeVolumesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeVolumesOutput, error) {
+			return &ec2.DescribeVolumesOutput{
+				Volumes: []ec2types.Volume{
+					{
+						VolumeId: aws.String(volumeID),
+						Tags: []ec2types.Tag{
+							{
+								Key:   aws.String("KubernetesCluster"),
+								Value: aws.String(clusterName),
+							},
+							{
+								Key:   aws.String("kubernetes.io/created-for/pvc/name"),
+								Value: aws.String(testPVCName),
+							},
+							{
+								Key:   aws.String("kubernetes.io/created-for/pvc/uid"),
+								Value: aws.String(string(oldPVCUID)),
+							},
+						},
+						Attachments: []ec2types.VolumeAttachment{}, // No attachments
+					},
+				},
+			}, nil
+		},
+		CreateTagsFunc: func(ctx context.Context, params *ec2.CreateTagsInput, optFns ...func(*ec2.Options)) (*ec2.CreateTagsOutput, error) {
+			if params.DryRun != nil && *params.DryRun {
+				// For dry run, return DryRunOperation error
+				return nil, &smithy.GenericAPIError{
+					Code:    "DryRunOperation",
+					Message: "Request would have succeeded, but DryRun flag is set",
+				}
+			}
+			return &ec2.CreateTagsOutput{}, nil
+		},
+		CreateSnapshotFunc: func(ctx context.Context, params *ec2.CreateSnapshotInput, optFns ...func(*ec2.Options)) (*ec2.CreateSnapshotOutput, error) {
+			return &ec2.CreateSnapshotOutput{
+				SnapshotId: aws.String(snapshotID),
+			}, nil
+		},
+		DescribeSnapshotsFunc: func(ctx context.Context, params *ec2.DescribeSnapshotsInput, optFns ...func(*ec2.Options)) (*ec2.DescribeSnapshotsOutput, error) {
+			return &ec2.DescribeSnapshotsOutput{
+				Snapshots: []ec2types.Snapshot{
+					{
+						SnapshotId: aws.String(snapshotID),
+						State:      ec2types.SnapshotStateCompleted,
+					},
+				},
+			}, nil
+		},
+	}
+
+	// Create mock EKS client
+	mockEKS := &mockEKSClient{
+		DescribeClusterFunc: func(ctx context.Context, params *eks.DescribeClusterInput, optFns ...func(*eks.Options)) (*eks.DescribeClusterOutput, error) {
+			return &eks.DescribeClusterOutput{
+				Cluster: &ekstypes.Cluster{
+					Arn: aws.String(" arn:aws:eks:us-west-2:123456789012:cluster/adorable-bluegrass-walrus"),
+				},
+			}, nil
+		},
+	}
+
+	// Create migrator with mocks
+	m := &Migrator{
+		kubeClient: kubeClient,
+		cfg: Config{
+			NewStorageClassName: newStorageClassName,
+			Namespace:           testNamespace,
+			PVCName:             testPVCName,
+			ClusterName:         clusterName,
+		},
+		inTreeTranslator: plugins.NewAWSElasticBlockStoreCSITranslator(),
+		ec2:              mockEC2,
+		eks:              mockEKS,
 	}
 
 	// Test the happy path
@@ -1258,7 +1599,7 @@ func TestValidateEC2WithClusterNameMismatch(t *testing.T) {
 		t.Errorf("Expected error about cluster name mismatch, got: %v", err)
 	}
 }
-func TestValidateK8sWithNonCSIPV(t *testing.T) {
+func TestValidateK8sWithInTreeEBS(t *testing.T) {
 	// Setup test data
 	testNamespace := "default"
 	testPVCName := "test-pvc"
@@ -1277,7 +1618,7 @@ func TestValidateK8sWithNonCSIPV(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name: oldStorageClassName,
 		},
-		Provisioner:       "ebs.csi.aws.com",
+		Provisioner:       "kubernetes.io/aws-ebs",
 		VolumeBindingMode: &waitForFirstConsumer,
 	}
 
@@ -1370,21 +1711,41 @@ func TestValidateK8sWithNonCSIPV(t *testing.T) {
 			PVCName:             testPVCName,
 			ClusterName:         clusterName,
 		},
+		inTreeTranslator: plugins.NewAWSElasticBlockStoreCSITranslator(),
 	}
 
-	// Test validation with non-CSI PV
+	// Test validation with in-tree EBS PV
 	ctx := context.Background()
 	err := m.validateK8s(ctx)
 
-	// Should fail because PV is not managed by CSI
-	if err == nil {
-		t.Fatal("validateK8s() should fail with non-CSI PV")
+	// Should succeed with in-tree AWS EBS PV
+	if err != nil {
+		t.Fatalf("validateK8s() should not fail with AWS EBS in-tree PV: %v", err)
 	}
 
-	if !strings.Contains(err.Error(), "not managed by CSI") {
-		t.Errorf("Expected error about PV not managed by CSI, got: %v", err)
+	// Verify that translation happened correctly
+	if m.originalPV.Spec.CSI == nil {
+		t.Fatal("In-tree PV was not translated to CSI")
 	}
+
+	if m.originalPV.Spec.AWSElasticBlockStore != nil {
+		t.Fatalf("expected spec.AWSElasticBlockStore to be nil")
+	}
+
+	if m.originalPV.Spec.CSI.Driver != "ebs.csi.aws.com" {
+		t.Errorf("Expected translated driver to be ebs.csi.aws.com, got %s", m.originalPV.Spec.CSI.Driver)
+	}
+
+	if m.originalPV.Spec.CSI.VolumeHandle != volumeID {
+		t.Errorf("Expected volume handle to be %s, got %s", volumeID, m.originalPV.Spec.CSI.VolumeHandle)
+	}
+
+	if m.originalStorageClass.Provisioner != "ebs.csi.aws.com" {
+		t.Errorf("Expected translated provisioner to be ebs.csi.aws.com, got %s", m.originalStorageClass.Provisioner)
+	}
+
 }
+
 func TestExecuteWithFailedPVCDeletion(t *testing.T) {
 	// Setup test data
 	testNamespace := "default"

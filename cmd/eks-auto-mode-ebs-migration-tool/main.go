@@ -26,7 +26,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/util/homedir"
-	"log"
+	"k8s.io/klog/v2"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -51,6 +51,7 @@ must be detached prior to migration.`)
 }
 
 func main() {
+	klog.InitFlags(nil)
 	kubeconfigDefault := filepath.Join(homedir.HomeDir(), ".kube", "config")
 	if envKubeConfig := os.Getenv("KUBECONFIG"); envKubeConfig != "" {
 		kubeconfigDefault = envKubeConfig
@@ -72,9 +73,9 @@ func main() {
 		os.Exit(0)
 	}
 	if *dryRun {
-		log.Println("running in dry-run mode")
+		klog.InfoS("Running in dry-run mode")
 	} else {
-		log.Println("running in mutate mode")
+		klog.InfoS("Running in mutate mode")
 	}
 
 	mcfg := migrator.Config{
@@ -84,7 +85,8 @@ func main() {
 		PVCName:             *pvcName,
 	}
 	if err := mcfg.Validate(); err != nil {
-		log.Printf("error validating input, %s", err)
+		klog.ErrorS(err, "Error validating input")
+		fmt.Println()
 		flag.Usage()
 		os.Exit(1)
 	}
@@ -94,16 +96,19 @@ func main() {
 
 	config, err := clientcmd.BuildConfigFromFlags("", *kubeConfig)
 	if err != nil {
-		log.Fatalf("building K8s client config, %s", err)
+		klog.ErrorS(err, "Error building K8s client config")
+		klog.FlushAndExit(klog.ExitFlushTimeout, 1)
 	}
 	cs, err := kubernetes.NewForConfig(config)
 	if err != nil {
-		log.Fatalf("creating PVC client, %s", err)
+		klog.ErrorS(err, "Error creating PVC client")
+		klog.FlushAndExit(klog.ExitFlushTimeout, 1)
 	}
 
 	cfg, err := awscfg.LoadDefaultConfig(ctx)
 	if err != nil {
-		fmt.Println("Error loading AWS configuration:", err)
+		klog.ErrorS(err, "Unable to load AWS configuration")
+		klog.FlushAndExit(klog.ExitFlushTimeout, 1)
 		return
 	}
 
@@ -111,27 +116,30 @@ func main() {
 
 	// first validate any preconditions, perform dry-run checks, etc.
 	if err := m.ValidatePreconditions(ctx); err != nil {
-		log.Fatalf("precondition checks failed, %s", err)
+		klog.ErrorS(err, "Precondition checks failed")
+		klog.FlushAndExit(klog.ExitFlushTimeout, 1)
 	}
 
 	// if we're in dry-run mode, stop there
 	if *dryRun {
-		log.Printf("Dry-run completed successfully")
+		klog.InfoS("Dry-run completed successfully")
 		os.Exit(0)
 	}
 
 	if *snapshot {
 		if err := m.PerformSnapshot(ctx); err != nil {
-			log.Fatalf("creating snapshot, %s", err)
+			klog.ErrorS(err, "Error creating snapshot")
+			klog.FlushAndExit(klog.ExitFlushTimeout, 1)
 		}
 	}
 
 	// check if the user is overriding the prompt
 	if *yes {
-		log.Printf("skipping prompt due to `--yes`")
+		klog.InfoS("Skipping prompt due to `--yes`")
 	} else {
 		if userInput := promptUserInput("Validations were successful. The following operations can fail and will require manual intervention to repair in that case. Type YES to continue with migration"); userInput != "YES" {
-			log.Fatalf("Aborting, no changes have been made")
+			klog.InfoS("Aborting, no changes have been made")
+			klog.FlushAndExit(klog.ExitFlushTimeout, 1)
 		}
 	}
 
@@ -139,10 +147,11 @@ func main() {
 	// put us in a really bad state. We start by deleting the PVC.  Since the volume name is formed by the PVC UID, which
 	// we can't control, manual recovery is the only way out from here.
 	if err := m.Execute(ctx); err != nil {
-		log.Fatalf("executing migration, %s", err)
+		klog.ErrorS(err, "Error executing migration")
+		klog.FlushAndExit(klog.ExitFlushTimeout, 1)
 	}
 
-	log.Printf("Migration complete!")
+	klog.InfoS("Migration complete!")
 }
 
 func promptUserInput(prompt string) string {

@@ -29,7 +29,8 @@ import (
 	storagev1 "k8s.io/api/storage/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
-	"log"
+	"k8s.io/csi-translation-lib/plugins"
+	"k8s.io/klog/v2"
 	"regexp"
 	"strings"
 	"time"
@@ -60,14 +61,17 @@ type Migrator struct {
 	newStorageClass      *storagev1.StorageClass
 	volume               types.Volume
 	tagsToUpdate         []types.Tag
+	inTreeTranslator     plugins.InTreePlugin
 }
 
 func New(cs kubernetes.Interface, awsCfg aws.Config, cfg Config) *Migrator {
+
 	return &Migrator{
-		kubeClient: cs,
-		cfg:        cfg,
-		ec2:        ec2.NewFromConfig(awsCfg),
-		eks:        eks.NewFromConfig(awsCfg),
+		kubeClient:       cs,
+		cfg:              cfg,
+		ec2:              ec2.NewFromConfig(awsCfg),
+		eks:              eks.NewFromConfig(awsCfg),
+		inTreeTranslator: plugins.NewAWSElasticBlockStoreCSITranslator(),
 	}
 }
 
@@ -99,7 +103,7 @@ func (m *Migrator) validateK8s(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("getting PVC, %s", err)
 	}
-	log.Printf("Found PVC %s/%s", pvc.Namespace, pvc.Name)
+	klog.InfoS("Found PVC", "pvc", klog.KObj(pvc))
 	if pvc.Spec.StorageClassName == nil {
 		return errors.New("PVC has no storage class specified")
 	}
@@ -116,29 +120,43 @@ func (m *Migrator) validateK8s(ctx context.Context) error {
 	m.originalStorageClass = oldSc
 	m.oldStorageClassProvisioner = oldSc.Provisioner
 
+	if pvc.Spec.VolumeName == "" {
+		return fmt.Errorf("PVC %s/%s has no volume name specified", pvc.Namespace, pvc.Name)
+	}
 	// update our volume name since we don't know it yet
 	m.oldVolumeName = pvc.Spec.VolumeName
 	// validate that we can delete/create PVCs/PVs
 	for _, verb := range []string{"delete", "create"} {
-		log.Printf("Validating ability to %s PVC %s/%s", verb, m.cfg.Namespace, m.cfg.PVCName)
+		klog.InfoS("Validating ability to perform action on PVC",
+			"action", verb,
+			"namespace", m.cfg.Namespace,
+			"pvcName", m.cfg.PVCName)
 		if err := k8s.DryRunRbac(ctx, m.kubeClient, verb, m.cfg.Namespace, "persistentvolumeclaims", m.cfg.PVCName); err != nil {
 			return fmt.Errorf("unable to validate ability to %s PVC, %s", verb, err)
 		}
-		log.Printf("Validating ability to %s PV %s/%s", verb, m.cfg.Namespace, m.oldVolumeName)
+		klog.InfoS("Validating ability to perform action on PV",
+			"action", verb,
+			"namespace", m.cfg.Namespace,
+			"pvName", m.oldVolumeName)
 		if err := k8s.DryRunRbac(ctx, m.kubeClient, verb, m.cfg.Namespace, "persistentvolumes", m.oldVolumeName); err != nil {
 			return fmt.Errorf("unable to validate ability to %s PV, %s", verb, err)
 		}
 	}
 
-	log.Printf("Identified migration from StorageClass %s -> %s", m.oldStorageClassName, m.cfg.NewStorageClassName)
+	klog.InfoS("Identified migration from StorageClass to new StorageClass",
+		"oldStorageClass", m.oldStorageClassName,
+		"newStorageClass", m.cfg.NewStorageClassName)
 
 	pv, err := m.kubeClient.CoreV1().PersistentVolumes().Get(ctx, m.oldVolumeName, metav1.GetOptions{})
 	if err != nil {
-		return fmt.Errorf("unable to find volume named %s referenced from PersistentVolumeClaim", m.oldVolumeName)
+		return fmt.Errorf("unable to find volume named %q referenced from PersistentVolumeClaim", m.oldVolumeName)
 	}
 	// validate that the volume is created by a CSI
-	if pv.Spec.CSI == nil {
-		return fmt.Errorf("PV %s not managed by CSI", m.oldVolumeName)
+	if pv.Spec.CSI == nil && pv.Spec.AWSElasticBlockStore == nil {
+		return fmt.Errorf("PV %s not managed by CSI or legacy in-tree AWS EBS driver", m.oldVolumeName)
+	}
+	if pv.Spec.CSI != nil && pv.Spec.AWSElasticBlockStore != nil {
+		return fmt.Errorf("PV %s has both a CSI and legacy in-tree AWS EBS driver configuration", m.oldVolumeName)
 	}
 	// and that the EBS volume backing the PV won't be deleted if we delete the volum
 	if pv.Spec.PersistentVolumeReclaimPolicy != v1.PersistentVolumeReclaimRetain {
@@ -147,6 +165,25 @@ func (m *Migrator) validateK8s(ctx context.Context) error {
 	}
 
 	m.originalPV = pv.DeepCopy()
+	// translate from our in-tree PV & CSI to the out of tree
+	if pv.Spec.AWSElasticBlockStore != nil {
+		lg := klog.NewKlogr()
+		m.originalPV, err = m.inTreeTranslator.TranslateInTreePVToCSI(lg, m.originalPV)
+		if err != nil {
+			return fmt.Errorf("unable to translate PV %s to in-tree AWS EBS driver", m.oldVolumeName)
+		}
+		m.originalStorageClass, err = m.inTreeTranslator.TranslateInTreeStorageClassToCSI(lg, m.originalStorageClass)
+		if err != nil {
+			return fmt.Errorf("unable to translate StorageClass %s to in-tree AWS EBS driver", m.oldStorageClassName)
+		}
+		m.originalStorageClass.Provisioner = "ebs.csi.aws.com"
+	}
+
+	// Validate that we have a CSI driver after potential translation
+	if m.originalPV.Spec.CSI == nil {
+		return fmt.Errorf("PV %s not managed by CSI after translation", m.oldVolumeName)
+	}
+
 	m.originalPVC = pvc.DeepCopy()
 	return nil
 }
@@ -161,7 +198,7 @@ func (m *Migrator) validateEC2(ctx context.Context) (err error) {
 		return fmt.Errorf("expected to find one volume, found %d", len(volumes.Volumes))
 	}
 	m.volume = volumes.Volumes[0]
-	log.Printf("Found EBS volume %s", aws.ToString(m.volume.VolumeId))
+	klog.InfoS("Found EBS volume", "volumeId", aws.ToString(m.volume.VolumeId))
 
 	if len(m.volume.Attachments) != 0 {
 		return fmt.Errorf("can't migrate volume %s that is still attached to an instance", aws.ToString(m.volume.VolumeId))
@@ -192,7 +229,7 @@ func (m *Migrator) validateEC2(ctx context.Context) (err error) {
 		}
 	}
 
-	log.Printf("Validating ability to modify volume tags on %s", aws.ToString(m.volume.VolumeId))
+	klog.InfoS("Validating ability to modify volume tags", "volumeId", aws.ToString(m.volume.VolumeId))
 	// make a dry-run call to see if we can create tags on the volume
 	_, err = m.ec2.CreateTags(ctx, &ec2.CreateTagsInput{
 		Resources: []string{aws.ToString(m.volume.VolumeId)},
@@ -213,18 +250,18 @@ func (m *Migrator) validateEC2(ctx context.Context) (err error) {
 }
 
 func (m *Migrator) validateEKS(ctx context.Context) error {
-	log.Printf("validating that cluster name %s exists", m.cfg.ClusterName)
+	klog.InfoS("Validating cluster exists", "clusterName", m.cfg.ClusterName)
 	// validate that the cluster name is real
 	c, err := m.eks.DescribeCluster(ctx, &eks.DescribeClusterInput{Name: &m.cfg.ClusterName})
 	if err != nil {
 		return fmt.Errorf("unable to find cluster %s", m.cfg.ClusterName)
 	}
-	log.Printf("Found cluster %s", aws.ToString(c.Cluster.Arn))
+	klog.InfoS("Found cluster", "clusterArn", aws.ToString(c.Cluster.Arn))
 	return nil
 }
 
 func (m *Migrator) PerformSnapshot(ctx context.Context) error {
-	log.Printf("Creating EBS volume snapshot, this can take a few minutes")
+	klog.InfoS("Creating EBS volume snapshot, this can take a few minutes")
 	rsp, err := m.ec2.CreateSnapshot(ctx,
 		&ec2.CreateSnapshotInput{
 			VolumeId: m.volume.VolumeId,
@@ -256,7 +293,9 @@ func (m *Migrator) PerformSnapshot(ctx context.Context) error {
 	if err := waitOnSnapshot(ctx, m.ec2, rsp.SnapshotId); err != nil {
 		return fmt.Errorf("snapshot never completed, %s", err)
 	}
-	log.Printf("Created snapshot of %s, %s", aws.ToString(m.volume.VolumeId), aws.ToString(rsp.SnapshotId))
+	klog.InfoS("Created snapshot",
+		"volumeId", aws.ToString(m.volume.VolumeId),
+		"snapshotId", aws.ToString(rsp.SnapshotId))
 
 	return nil
 }
@@ -283,12 +322,36 @@ func (m *Migrator) Execute(ctx context.Context) error {
 	delete(pvc.Annotations, "volume.kubernetes.io/selected-node")
 
 	pv := m.originalPV.DeepCopy()
+
 	// clear out metadata
 	k8s.ClearMetadata(&pv.ObjectMeta)
 	pv.Status = v1.PersistentVolumeStatus{}
 
+	// map from any legacy zone topology selector to the standard name
+	if pv.Spec.NodeAffinity != nil && pv.Spec.NodeAffinity.Required != nil {
+		for i := 0; i < len(pv.Spec.NodeAffinity.Required.NodeSelectorTerms); i++ {
+			for j := 0; j < len(pv.Spec.NodeAffinity.Required.NodeSelectorTerms[i].MatchExpressions); j++ {
+				if pv.Spec.NodeAffinity.Required.NodeSelectorTerms[i].MatchExpressions[j].Key == "topology.ebs.csi.aws.com/zone" {
+					pv.Spec.NodeAffinity.Required.NodeSelectorTerms[i].MatchExpressions[j].Key = "topology.kubernetes.io/zone"
+				}
+			}
+		}
+	}
+
 	// change the storage class from the old to the new value everywhere
 	pv.Spec.StorageClassName = m.cfg.NewStorageClassName
+
+	// Ensure we have a valid CSI spec after translation
+	if pv.Spec.CSI == nil {
+		return fmt.Errorf("PV %s does not have a valid CSI spec after translation", pv.Name)
+	}
+
+	// Validate volume ID format
+	volumeID := aws.ToString(m.volume.VolumeId)
+	if !strings.HasPrefix(volumeID, "vol-") {
+		return fmt.Errorf("invalid EBS volume ID format: %s", volumeID)
+	}
+
 	pv.Spec.CSI.Driver = m.newStorageClassProvisioner // from the new storage class we described
 	for k, v := range pv.Annotations {
 		if v == m.oldStorageClassName {
@@ -321,34 +384,34 @@ func (m *Migrator) Execute(ctx context.Context) error {
 		return err
 	}); err != nil {
 		// intentionally not exiting here as its better to just proceed
-		log.Printf("unable to verify deletion of existing PVC, %s", err)
+		klog.V(1).InfoS("Unable to verify deletion of existing PVC", "error", err)
 	}
 
 	err = m.kubeClient.CoreV1().PersistentVolumes().Delete(ctx, pv.Name, metav1.DeleteOptions{})
 	if err != nil {
 		// technically if we don't delete the volume, it will hang around but that should be ok and is likely better
 		// than aborting after we delete the PVC
-		log.Printf("unable to delete volume, continuing, %s", err)
+		klog.V(1).InfoS("Unable to delete volume, continuing", "error", err)
 	}
 	// wait for the PV to be removed
 	if err := k8s.WaitForNotFound(ctx, fmt.Sprintf("PV %s", pv.Name), func() error {
 		_, err := m.kubeClient.CoreV1().PersistentVolumes().Get(ctx, pv.Name, metav1.GetOptions{})
 		return err
 	}); err != nil {
-		log.Printf("unable to verify deletion of existing PVC, %s", err)
+		klog.V(1).InfoS("Unable to verify deletion of existing PVC", "error", err)
 	}
 
 	// create our new PVC
 	newPVC, err := m.kubeClient.CoreV1().PersistentVolumeClaims(m.cfg.Namespace).Create(ctx, pvc, metav1.CreateOptions{})
-	log.Printf("created PVC with annotations %+v", pvc.Annotations)
+	klog.V(4).InfoS("Created PVC with annotations", "annotations", pvc.Annotations)
 	if err != nil {
 		return fmt.Errorf("unable to create new PVC, %s", err)
 	}
 	newPVCID := fmt.Sprintf("pvc-%s", newPVC.UID)
-	log.Printf("Created new PVC %s with UID %s", newPVC.Name, newPVC.UID)
+	klog.InfoS("Created new PVC", "pvc", klog.KObj(newPVC), "uid", newPVC.UID)
 
 	// update the tags on our EBS volume to refer to the newly created PVC by its UID
-	log.Printf("Tagging EBS volume to match new PVC")
+	klog.InfoS("Tagging EBS volume to match new PVC")
 	oldPVCID := fmt.Sprintf("pvc-%s", m.originalPVC.UID)
 	_, err = m.ec2.CreateTags(ctx, &ec2.CreateTagsInput{
 		Resources: []string{aws.ToString(m.volume.VolumeId)},
@@ -368,7 +431,7 @@ func (m *Migrator) Execute(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("creating new PersistentVolume, %s", err)
 	}
-	log.Printf("Created new persistent volume, %s", newPV.Name)
+	klog.InfoS("Created new persistent volume", "volume", klog.KObj(newPV))
 	return nil
 }
 
@@ -401,7 +464,7 @@ func waitOnSnapshot(ctx context.Context, client EC2Client, snapshotID *string) e
 		if currentStatus == types.SnapshotStateCompleted {
 			return nil
 		}
-		log.Printf("snapshot status = %s, waiting for completion", currentStatus)
+		klog.InfoS("Snapshot status", "status", currentStatus, "message", "waiting for completion")
 		timer := time.NewTimer(10 * time.Second)
 		select {
 		case <-timer.C:
