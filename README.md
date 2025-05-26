@@ -63,6 +63,8 @@ brew install eks-auto-mode-ebs-migration-tool
 First, run the tool in dry-run mode (the default) to perform all validation checks:
 
 ```bash
+% export AWS_REGION=us-west-2
+% export AWS_PROFILE=myprofile
 % ./eks-auto-mode-ebs-migration-tool --cluster-name my-cluster-name --pvc-name my-pvc-name -storageclass new-storage-class
 2025/03/31 10:06:36 running in dry-run mode
 2025/03/31 10:06:38 Found PVC default/my-pvc-name 
@@ -74,6 +76,8 @@ First, run the tool in dry-run mode (the default) to perform all validation chec
 If this is successful, you can add the `--dry-run=false` argument to the command line to perform the actual migration:
 
 ```bash
+% export AWS_REGION=us-west-2
+% export AWS_PROFILE=myprofile
 % ./eks-auto-mode-ebs-migration-tool --cluster-name my-cluster-name --pvc-name my-pvc-name -storageclass new-storage-class --dry-run=false
 2025/03/31 10:07:48 running in mutate mode
 2025/03/31 10:07:51 Found PVC default/my-pvc-name
