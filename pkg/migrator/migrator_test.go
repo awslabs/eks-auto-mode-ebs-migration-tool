@@ -25,6 +25,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/eks"
 	ekstypes "github.com/aws/aws-sdk-go-v2/service/eks/types"
 	"github.com/aws/smithy-go"
+	appsv1 "k8s.io/api/apps/v1"
 	authv1 "k8s.io/api/authorization/v1"
 	v1 "k8s.io/api/core/v1"
 	storagev1 "k8s.io/api/storage/v1"
@@ -1910,6 +1911,7 @@ func TestExecuteWithFailedPVCDeletion(t *testing.T) {
 		t.Errorf("Expected error about PVC deletion, got: %v", err)
 	}
 }
+
 func TestPerformSnapshotWithError(t *testing.T) {
 	// Setup test data
 	testNamespace := "default"
@@ -2015,6 +2017,7 @@ func TestPerformSnapshotWithPendingSnapshot(t *testing.T) {
 		t.Errorf("Expected at least 3 calls to DescribeSnapshots, got %d", callCount)
 	}
 }
+
 func TestValidateK8sWithSameStorageClass(t *testing.T) {
 	// Setup test data
 	testNamespace := "default"
@@ -2093,6 +2096,7 @@ func TestValidateK8sWithSameStorageClass(t *testing.T) {
 		t.Errorf("Expected error about already using storage class, got: %v", err)
 	}
 }
+
 func TestValidateK8sWithMissingPVC(t *testing.T) {
 	// Setup test data
 	testNamespace := "default"
@@ -2217,5 +2221,360 @@ func TestValidateK8sWithMissingStorageClass(t *testing.T) {
 
 	if !strings.Contains(err.Error(), "unable to find storage class") {
 		t.Errorf("Expected error about finding storage class, got: %v", err)
+	}
+}
+
+func TestValidateOwnerStatefulSet(t *testing.T) {
+	testCases := []struct {
+		name                string
+		pvcName             string
+		namespace           string
+		newStorageClassName string
+		newStorageClass     *storagev1.StorageClass
+		statefulSets        []appsv1.StatefulSet
+		expectError         bool
+		errorContains       string
+	}{
+		{
+			name:                "No StatefulSet owner",
+			pvcName:             "random-pvc",
+			namespace:           "default",
+			newStorageClassName: "ebs-auto-sc",
+			newStorageClass: &storagev1.StorageClass{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "ebs-auto-sc",
+				},
+			},
+			statefulSets: []appsv1.StatefulSet{},
+			expectError:  false,
+		},
+		{
+			name:                "StatefulSet owner with no storage class in template and default storage class",
+			pvcName:             "data-my-sts-0",
+			namespace:           "default",
+			newStorageClassName: "ebs-auto-sc",
+			newStorageClass: &storagev1.StorageClass{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "ebs-auto-sc",
+					Annotations: map[string]string{
+						"storageclass.kubernetes.io/is-default-class": "true",
+					},
+				},
+			},
+			statefulSets: []appsv1.StatefulSet{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "my-sts",
+						Namespace: "default",
+					},
+					Spec: appsv1.StatefulSetSpec{
+						VolumeClaimTemplates: []v1.PersistentVolumeClaim{
+							{
+								ObjectMeta: metav1.ObjectMeta{
+									Name: "data",
+								},
+								Spec: v1.PersistentVolumeClaimSpec{
+									// No storage class specified
+								},
+							},
+						},
+					},
+				},
+			},
+			expectError: false,
+		},
+		{
+			name:                "StatefulSet owner with no storage class in template and non-default storage class",
+			pvcName:             "data-my-sts-0",
+			namespace:           "default",
+			newStorageClassName: "ebs-auto-sc",
+			newStorageClass: &storagev1.StorageClass{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "ebs-auto-sc",
+					// No default annotation
+				},
+			},
+			statefulSets: []appsv1.StatefulSet{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "my-sts",
+						Namespace: "default",
+					},
+					Spec: appsv1.StatefulSetSpec{
+						VolumeClaimTemplates: []v1.PersistentVolumeClaim{
+							{
+								ObjectMeta: metav1.ObjectMeta{
+									Name: "data",
+								},
+								Spec: v1.PersistentVolumeClaimSpec{
+									// No storage class specified
+								},
+							},
+						},
+					},
+				},
+			},
+			expectError:   true,
+			errorContains: "has no storageClassName specified in volumeClaimTemplate data and new storage class isn't the default",
+		},
+		{
+			name:                "StatefulSet owner with matching storage class in template",
+			pvcName:             "data-my-sts-0",
+			namespace:           "default",
+			newStorageClassName: "ebs-auto-sc",
+			newStorageClass: &storagev1.StorageClass{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "ebs-auto-sc",
+				},
+			},
+			statefulSets: []appsv1.StatefulSet{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "my-sts",
+						Namespace: "default",
+					},
+					Spec: appsv1.StatefulSetSpec{
+						VolumeClaimTemplates: []v1.PersistentVolumeClaim{
+							{
+								ObjectMeta: metav1.ObjectMeta{
+									Name: "data",
+								},
+								Spec: v1.PersistentVolumeClaimSpec{
+									StorageClassName: aws.String("ebs-auto-sc"),
+								},
+							},
+						},
+					},
+				},
+			},
+			expectError: false,
+		},
+		{
+			name:                "StatefulSet owner with non-matching storage class in template",
+			pvcName:             "data-my-sts-0",
+			namespace:           "default",
+			newStorageClassName: "ebs-auto-sc",
+			newStorageClass: &storagev1.StorageClass{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "ebs-auto-sc",
+				},
+			},
+			statefulSets: []appsv1.StatefulSet{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "my-sts",
+						Namespace: "default",
+					},
+					Spec: appsv1.StatefulSetSpec{
+						VolumeClaimTemplates: []v1.PersistentVolumeClaim{
+							{
+								ObjectMeta: metav1.ObjectMeta{
+									Name: "data",
+								},
+								Spec: v1.PersistentVolumeClaimSpec{
+									StorageClassName: aws.String("different-sc"),
+								},
+							},
+						},
+					},
+				},
+			},
+			expectError:   true,
+			errorContains: "has different storageClassName specified",
+		},
+		{
+			name:                "StatefulSet with template name prefix",
+			pvcName:             "data-0",
+			namespace:           "default",
+			newStorageClassName: "ebs-auto-sc",
+			newStorageClass: &storagev1.StorageClass{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "ebs-auto-sc",
+				},
+			},
+			statefulSets: []appsv1.StatefulSet{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "my-sts",
+						Namespace: "default",
+					},
+					Spec: appsv1.StatefulSetSpec{
+						VolumeClaimTemplates: []v1.PersistentVolumeClaim{
+							{
+								ObjectMeta: metav1.ObjectMeta{
+									Name: "data",
+								},
+								Spec: v1.PersistentVolumeClaimSpec{
+									StorageClassName: aws.String("ebs-auto-sc"),
+								},
+							},
+						},
+					},
+				},
+			},
+			expectError: false,
+		},
+		{
+			name:                "StatefulSet with template name and sts name",
+			pvcName:             "data-my-sts-0",
+			namespace:           "default",
+			newStorageClassName: "ebs-auto-sc",
+			newStorageClass: &storagev1.StorageClass{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "ebs-auto-sc",
+				},
+			},
+			statefulSets: []appsv1.StatefulSet{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "my-sts",
+						Namespace: "default",
+					},
+					Spec: appsv1.StatefulSetSpec{
+						VolumeClaimTemplates: []v1.PersistentVolumeClaim{
+							{
+								ObjectMeta: metav1.ObjectMeta{
+									Name: "data",
+								},
+								Spec: v1.PersistentVolumeClaimSpec{
+									StorageClassName: aws.String("ebs-auto-sc"),
+								},
+							},
+						},
+					},
+				},
+			},
+			expectError: false,
+		},
+		{
+			name:                "Multiple StatefulSets with one matching",
+			pvcName:             "data-my-sts-0",
+			namespace:           "default",
+			newStorageClassName: "ebs-auto-sc",
+			newStorageClass: &storagev1.StorageClass{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "ebs-auto-sc",
+				},
+			},
+			statefulSets: []appsv1.StatefulSet{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "other-sts",
+						Namespace: "default",
+					},
+					Spec: appsv1.StatefulSetSpec{
+						VolumeClaimTemplates: []v1.PersistentVolumeClaim{
+							{
+								ObjectMeta: metav1.ObjectMeta{
+									Name: "data",
+								},
+								Spec: v1.PersistentVolumeClaimSpec{
+									StorageClassName: aws.String("different-sc"),
+								},
+							},
+						},
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "my-sts",
+						Namespace: "default",
+					},
+					Spec: appsv1.StatefulSetSpec{
+						VolumeClaimTemplates: []v1.PersistentVolumeClaim{
+							{
+								ObjectMeta: metav1.ObjectMeta{
+									Name: "data",
+								},
+								Spec: v1.PersistentVolumeClaimSpec{
+									StorageClassName: aws.String("ebs-auto-sc"),
+								},
+							},
+						},
+					},
+				},
+			},
+			expectError: false,
+		},
+		{
+			name:                "PVC name with multiple hyphens",
+			pvcName:             "data-my-complex-sts-0",
+			namespace:           "default",
+			newStorageClassName: "ebs-auto-sc",
+			newStorageClass: &storagev1.StorageClass{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "ebs-auto-sc",
+				},
+			},
+			statefulSets: []appsv1.StatefulSet{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "my-complex-sts",
+						Namespace: "default",
+					},
+					Spec: appsv1.StatefulSetSpec{
+						VolumeClaimTemplates: []v1.PersistentVolumeClaim{
+							{
+								ObjectMeta: metav1.ObjectMeta{
+									Name: "data",
+								},
+								Spec: v1.PersistentVolumeClaimSpec{
+									StorageClassName: aws.String("ebs-auto-sc"),
+								},
+							},
+						},
+					},
+				},
+			},
+			expectError: false,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Create fake client with StatefulSets
+			kubeClient := fake.NewClientset()
+			for _, sts := range tc.statefulSets {
+				_, err := kubeClient.AppsV1().StatefulSets(tc.namespace).Create(context.Background(), &sts, metav1.CreateOptions{})
+				if err != nil {
+					t.Fatalf("Failed to create StatefulSet: %v", err)
+				}
+			}
+
+			// Create PVC for testing
+			pvc := &v1.PersistentVolumeClaim{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      tc.pvcName,
+					Namespace: tc.namespace,
+				},
+			}
+
+			// Create migrator
+			m := &Migrator{
+				kubeClient: kubeClient,
+				cfg: Config{
+					PVCName:             tc.pvcName,
+					Namespace:           tc.namespace,
+					NewStorageClassName: tc.newStorageClassName,
+				},
+				newStorageClass: tc.newStorageClass,
+			}
+
+			// Test validateOwnerStatefulSet
+			err := m.validateOwnerStatefulSet(context.Background(), pvc)
+
+			// Check results
+			if tc.expectError && err == nil {
+				t.Errorf("Expected error but got nil")
+			}
+			if !tc.expectError && err != nil {
+				t.Errorf("Expected no error but got: %v", err)
+			}
+			if tc.expectError && err != nil && tc.errorContains != "" {
+				if !strings.Contains(err.Error(), tc.errorContains) {
+					t.Errorf("Expected error to contain '%s', but got: %v", tc.errorContains, err)
+				}
+			}
+		})
 	}
 }

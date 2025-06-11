@@ -25,6 +25,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/eks"
 	"github.com/aws/smithy-go"
 	"github.com/awslabs/eks-auto-mode-ebs-migration-tool/pkg/k8s"
+	appsv1 "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -106,6 +107,11 @@ func (m *Migrator) validateK8s(ctx context.Context) error {
 	klog.InfoS("Found PVC", "pvc", klog.KObj(pvc))
 	if pvc.Spec.StorageClassName == nil {
 		return errors.New("PVC has no storage class specified")
+	}
+
+	// find and validate the StatefulSet that owns this PVC, if any
+	if err := m.validateOwnerStatefulSet(ctx, pvc); err != nil {
+		return err
 	}
 
 	m.oldStorageClassName = *pvc.Spec.StorageClassName
@@ -473,4 +479,83 @@ func waitOnSnapshot(ctx context.Context, client EC2Client, snapshotID *string) e
 		}
 
 	}
+}
+
+// validateOwnerStatefulSet attempts to find the StatefulSet that owns the PVC
+// and validates that its volumeClaimTemplates don't contain a storageClass
+func (m *Migrator) validateOwnerStatefulSet(ctx context.Context, pvc *v1.PersistentVolumeClaim) error {
+	// StatefulSet PVCs follow the pattern: <statefulset-name>-<ordinal>
+	idx := strings.LastIndexByte(pvc.Name, '-')
+	if idx == -1 {
+		return nil
+	}
+	stsName := pvc.Name[:idx]
+	lastPart := pvc.Name[idx+1:]
+
+	var volumeClaimTemplate *v1.PersistentVolumeClaim
+	var owningStatefulSet *appsv1.StatefulSet
+	extractTemplate := func(sts *appsv1.StatefulSet) {
+		// Check if any of the volumeClaimTemplates would create our PVC
+		for _, template := range sts.Spec.VolumeClaimTemplates {
+			expectedPvcName1 := fmt.Sprintf("%s-%s", template.Name, lastPart)
+			expectedPvcName2 := fmt.Sprintf("%s-%s-%s", template.Name, sts.Name, lastPart)
+			if pvc.Name == expectedPvcName1 || pvc.Name == expectedPvcName2 {
+				volumeClaimTemplate = template.DeepCopy()
+				owningStatefulSet = sts
+				break
+			}
+		}
+	}
+	// Try to get the StatefulSet directly by name
+	sts, err := m.kubeClient.AppsV1().StatefulSets(m.cfg.Namespace).Get(ctx, stsName, metav1.GetOptions{})
+	if err == nil {
+		extractTemplate(sts)
+	}
+	if owningStatefulSet == nil {
+		// StatefulSet name can have the volume claim name as the prefix, so try with that name as well
+		idx = strings.IndexByte(stsName, '-')
+		if idx == -1 {
+			return nil
+		}
+		stsName = stsName[idx+1:]
+		sts, err = m.kubeClient.AppsV1().StatefulSets(m.cfg.Namespace).Get(ctx, stsName, metav1.GetOptions{})
+		if err == nil {
+			extractTemplate(sts)
+		}
+	}
+
+	if owningStatefulSet != nil && volumeClaimTemplate != nil {
+		klog.InfoS("Found owner StatefulSet", "statefulSet", klog.KObj(owningStatefulSet), "template", volumeClaimTemplate.Name)
+		// Validate that the template doesn't specify a storageClass
+		existingSCName := aws.ToString(volumeClaimTemplate.Spec.StorageClassName)
+		if existingSCName != "" && existingSCName != m.cfg.NewStorageClassName {
+			return fmt.Errorf("StatefulSet %s has different storageClassName specified (%s) in volumeClaimTemplate %s",
+				owningStatefulSet.Name, existingSCName, volumeClaimTemplate.Name)
+		}
+		if existingSCName == "" {
+			newStorageClassIsDefault := false
+			for k, v := range m.newStorageClass.Annotations {
+				if k == "storageclass.kubernetes.io/is-default-class" && v == "true" {
+					newStorageClassIsDefault = true
+				}
+			}
+			if !newStorageClassIsDefault {
+				return fmt.Errorf("StatefulSet %s has no storageClassName specified in volumeClaimTemplate %s and new storage class isn't the default",
+					owningStatefulSet.Name, volumeClaimTemplate.Name)
+			}
+			klog.InfoS("Validated owning StatefulSet volumeClaimTemplate has no storageClassName specified",
+				"statefulSet", klog.KObj(owningStatefulSet),
+				"template", volumeClaimTemplate.Name)
+		} else {
+			klog.InfoS("Validated owning StatefulSet volumeClaimTemplate has correct StorageClass name",
+				"statefulSet", klog.KObj(owningStatefulSet),
+				"template", volumeClaimTemplate.Name,
+				"storageClassName", existingSCName)
+		}
+
+	}
+
+	// No matching StatefulSet found, which is fine - not all PVCs are owned by StatefulSets
+	klog.V(4).InfoS("No owner StatefulSet found for PVC", "pvcName", pvc.Name)
+	return nil
 }
