@@ -8,10 +8,10 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/ec2 v1.251.2
 	github.com/aws/aws-sdk-go-v2/service/eks v1.73.3
 	github.com/aws/smithy-go v1.23.0
-	k8s.io/api v0.34.0
-	k8s.io/apimachinery v0.34.0
-	k8s.io/client-go v0.34.0
-	k8s.io/csi-translation-lib v0.34.0
+	k8s.io/api v0.34.1
+	k8s.io/apimachinery v0.34.1
+	k8s.io/client-go v0.34.1
+	k8s.io/csi-translation-lib v0.34.1
 	k8s.io/klog/v2 v2.130.1
 )
 
