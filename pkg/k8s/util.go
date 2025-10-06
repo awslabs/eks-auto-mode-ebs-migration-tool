@@ -22,7 +22,9 @@ import (
 	"regexp"
 	"time"
 
+	"github.com/samber/lo"
 	authv1 "k8s.io/api/authorization/v1"
+	v1 "k8s.io/api/core/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -48,13 +50,26 @@ func ClearMetadata(m *metav1.ObjectMeta) {
 }
 
 // GetAndValidateStorageClass retrieves a storage class by name and validates that it has the correct volume binding mode
-func GetAndValidateStorageClass(ctx context.Context, cs kubernetes.Interface, storageClassName string) (*storagev1.StorageClass, error) {
+func GetAndValidateStorageClass(ctx context.Context, cs kubernetes.Interface, storageClassName string, validateAutoSC bool) (*storagev1.StorageClass, error) {
 	sc, err := cs.StorageV1().StorageClasses().Get(ctx, storageClassName, metav1.GetOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("unable to find storage class %s, %w", storageClassName, err)
 	}
 	if sc.VolumeBindingMode == nil || *sc.VolumeBindingMode != storagev1.VolumeBindingWaitForFirstConsumer {
 		return nil, fmt.Errorf("PVC volume binding mode must be set to %s", storagev1.VolumeBindingWaitForFirstConsumer)
+	}
+	if validateAutoSC {
+		if sc.Provisioner != "ebs.csi.eks.amazonaws.com" {
+			return nil, fmt.Errorf("storageClass provisioner must be set to ebs.csi.eks.amazonaws.com")
+		}
+		if len(sc.AllowedTopologies) == 0 && !lo.ContainsBy(sc.AllowedTopologies, func(term v1.TopologySelectorTerm) bool {
+			return lo.ContainsBy(term.MatchLabelExpressions, func(exp v1.TopologySelectorLabelRequirement) bool {
+				return exp.Key == "eks.amazonaws.com/compute-type" &&
+					lo.Contains(exp.Values, "auto")
+			})
+		}) {
+			return nil, fmt.Errorf("storageClass allowed topologies must be set, please refer to https://docs.aws.amazon.com/eks/latest/userguide/create-storage-class.html")
+		}
 	}
 	return sc, nil
 }

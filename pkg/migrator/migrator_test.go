@@ -19,12 +19,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
+	"testing"
+
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	"github.com/aws/aws-sdk-go-v2/service/eks"
 	ekstypes "github.com/aws/aws-sdk-go-v2/service/eks/types"
 	"github.com/aws/smithy-go"
+	"github.com/samber/lo"
 	appsv1 "k8s.io/api/apps/v1"
 	authv1 "k8s.io/api/authorization/v1"
 	v1 "k8s.io/api/core/v1"
@@ -38,8 +42,6 @@ import (
 	"k8s.io/client-go/kubernetes/fake"
 	cgtesting "k8s.io/client-go/testing"
 	"k8s.io/csi-translation-lib/plugins"
-	"strings"
-	"testing"
 )
 
 // mockEC2Client is a mock implementation of the EC2 client for testing
@@ -106,7 +108,17 @@ func TestMigratorHappyPath(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name: newStorageClassName,
 		},
-		Provisioner:       newStorageProvisionerName,
+		Provisioner: newStorageProvisionerName,
+		AllowedTopologies: []v1.TopologySelectorTerm{
+			{
+				MatchLabelExpressions: []v1.TopologySelectorLabelRequirement{
+					{
+						Key:    "eks.amazonaws.com/compute-type",
+						Values: []string{"auto"},
+					},
+				},
+			},
+		},
 		VolumeBindingMode: &waitForFirstConsumer,
 	}
 
@@ -400,6 +412,21 @@ func TestMigratorHappyPath(t *testing.T) {
 		}
 	}
 
+	// Verify nodeAffinity on compute-type was added
+	if _, found := lo.Find(createdPV.Spec.NodeAffinity.Required.NodeSelectorTerms, func(n v1.NodeSelectorTerm) bool {
+		// Check if this term has the compute-type requirement
+		for _, expr := range n.MatchExpressions {
+			if expr.Key == "eks.amazonaws.com/compute-type" &&
+				expr.Operator == v1.NodeSelectorOpIn &&
+				lo.Contains(expr.Values, "auto") {
+				return true
+			}
+		}
+		return false
+	}); !found {
+		t.Errorf("Expected created PV to have required node-affinity for compute-type auto")
+	}
+
 	// Verify finalizers were updated
 	foundUpdatedFinalizer := false
 	for _, finalizer := range createdPV.Finalizers {
@@ -446,6 +473,16 @@ func TestMigratorHappyPathInTreeEBS(t *testing.T) {
 		},
 		Provisioner:       newStorageProvisionerName,
 		VolumeBindingMode: &waitForFirstConsumer,
+		AllowedTopologies: []v1.TopologySelectorTerm{
+			{
+				MatchLabelExpressions: []v1.TopologySelectorLabelRequirement{
+					{
+						Key:    "eks.amazonaws.com/compute-type",
+						Values: []string{"auto"},
+					},
+				},
+			},
+		},
 	}
 
 	// Create PVC
@@ -1363,6 +1400,16 @@ func TestValidateK8sWithInvalidPVReclaimPolicy(t *testing.T) {
 		},
 		Provisioner:       "ebs.csi.eks.amazonaws.com",
 		VolumeBindingMode: &waitForFirstConsumer,
+		AllowedTopologies: []v1.TopologySelectorTerm{
+			{
+				MatchLabelExpressions: []v1.TopologySelectorLabelRequirement{
+					{
+						Key:    "eks.amazonaws.com/compute-type",
+						Values: []string{"auto"},
+					},
+				},
+			},
+		},
 	}
 
 	// Create PVC
@@ -1629,6 +1676,16 @@ func TestValidateK8sWithInTreeEBS(t *testing.T) {
 		},
 		Provisioner:       "ebs.csi.eks.amazonaws.com",
 		VolumeBindingMode: &waitForFirstConsumer,
+		AllowedTopologies: []v1.TopologySelectorTerm{
+			{
+				MatchLabelExpressions: []v1.TopologySelectorLabelRequirement{
+					{
+						Key:    "eks.amazonaws.com/compute-type",
+						Values: []string{"auto"},
+					},
+				},
+			},
+		},
 	}
 
 	// Create PVC
@@ -1797,6 +1854,16 @@ func TestExecuteWithFailedPVCDeletion(t *testing.T) {
 		},
 		Provisioner:       "ebs.csi.eks.amazonaws.com",
 		VolumeBindingMode: &waitForFirstConsumer,
+		AllowedTopologies: []v1.TopologySelectorTerm{
+			{
+				MatchLabelExpressions: []v1.TopologySelectorLabelRequirement{
+					{
+						Key:    "eks.amazonaws.com/compute-type",
+						Values: []string{"auto"},
+					},
+				},
+			},
+		},
 	}
 	oldSC := &storagev1.StorageClass{
 		ObjectMeta: metav1.ObjectMeta{
@@ -2018,14 +2085,12 @@ func TestPerformSnapshotWithPendingSnapshot(t *testing.T) {
 	}
 }
 
-func TestValidateK8sWithSameStorageClass(t *testing.T) {
+func TestValidateK8sWithNewStorageClassUsingNonAutoProvisioner(t *testing.T) {
 	// Setup test data
 	testNamespace := "default"
 	testPVCName := "test-pvc"
 	storageClassName := "ebs-sc"
 	clusterName := "test-cluster"
-	oldPVCUID := types.UID("old-pvc-uid")
-	oldPVName := "pvc-old-pvc-uid"
 
 	// Create volume binding mode for storage classes
 	waitForFirstConsumer := storagev1.VolumeBindingWaitForFirstConsumer
@@ -2039,38 +2104,7 @@ func TestValidateK8sWithSameStorageClass(t *testing.T) {
 		VolumeBindingMode: &waitForFirstConsumer,
 	}
 
-	// Create PVC
-	pvc := &v1.PersistentVolumeClaim{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      testPVCName,
-			Namespace: testNamespace,
-			UID:       oldPVCUID,
-		},
-		Spec: v1.PersistentVolumeClaimSpec{
-			StorageClassName: &storageClassName,
-			VolumeName:       oldPVName,
-		},
-	}
-
-	// Create PV
-	pv := &v1.PersistentVolume{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: oldPVName,
-		},
-		Spec: v1.PersistentVolumeSpec{
-			StorageClassName:              storageClassName,
-			PersistentVolumeReclaimPolicy: v1.PersistentVolumeReclaimRetain,
-			PersistentVolumeSource: v1.PersistentVolumeSource{
-				CSI: &v1.CSIPersistentVolumeSource{
-					Driver:       "ebs.csi.aws.com",
-					VolumeHandle: "vol-12345678901234567",
-				},
-			},
-		},
-	}
-
-	// Create fake Kubernetes client
-	kubeClient := fake.NewClientset(pvc, pv, sc)
+	kubeClient := fake.NewClientset(sc)
 
 	// Create migrator with mocks - trying to migrate to the same storage class
 	m := &Migrator{
@@ -2092,8 +2126,54 @@ func TestValidateK8sWithSameStorageClass(t *testing.T) {
 		t.Fatal("validateK8s() should fail when migrating to the same storage class")
 	}
 
-	if !strings.Contains(err.Error(), "already using storage class") {
-		t.Errorf("Expected error about already using storage class, got: %v", err)
+	if !strings.Contains(err.Error(), "storageClass provisioner must be set to ebs.csi.eks.amazonaws.com") {
+		t.Errorf("Expected error about storageClass provisioner must be set to ebs.csi.eks.amazonaws.com, got: %v", err)
+	}
+}
+
+func TestValidateK8sWithNewStorageClassWithoutComputeTypeTopology(t *testing.T) {
+	// Setup test data
+	testNamespace := "default"
+	testPVCName := "test-pvc"
+	storageClassName := "ebs-sc"
+	clusterName := "test-cluster"
+
+	// Create volume binding mode for storage classes
+	waitForFirstConsumer := storagev1.VolumeBindingWaitForFirstConsumer
+
+	// Create storage class
+	sc := &storagev1.StorageClass{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: storageClassName,
+		},
+		Provisioner:       "ebs.csi.eks.amazonaws.com",
+		VolumeBindingMode: &waitForFirstConsumer,
+	}
+
+	kubeClient := fake.NewClientset(sc)
+
+	// Create migrator with mocks - trying to migrate to the same storage class
+	m := &Migrator{
+		kubeClient: kubeClient,
+		cfg: Config{
+			NewStorageClassName: storageClassName, // Same as current
+			Namespace:           testNamespace,
+			PVCName:             testPVCName,
+			ClusterName:         clusterName,
+		},
+	}
+
+	// Test validation with same storage class
+	ctx := context.Background()
+	err := m.validateK8s(ctx)
+
+	// Should fail because we're trying to migrate to the same storage class
+	if err == nil {
+		t.Fatal("validateK8s() should fail when migrating to the same storage class")
+	}
+
+	if !strings.Contains(err.Error(), "storageClass allowed topologies must be set") {
+		t.Errorf("Expected error about storageClass allowed topologies must be set: %v", err)
 	}
 }
 
@@ -2114,6 +2194,16 @@ func TestValidateK8sWithMissingPVC(t *testing.T) {
 		},
 		Provisioner:       "ebs.csi.eks.amazonaws.com",
 		VolumeBindingMode: &waitForFirstConsumer,
+		AllowedTopologies: []v1.TopologySelectorTerm{
+			{
+				MatchLabelExpressions: []v1.TopologySelectorLabelRequirement{
+					{
+						Key:    "eks.amazonaws.com/compute-type",
+						Values: []string{"auto"},
+					},
+				},
+			},
+		},
 	}
 
 	// Create fake Kubernetes client with no PVC
