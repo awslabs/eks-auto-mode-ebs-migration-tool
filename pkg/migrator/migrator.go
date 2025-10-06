@@ -19,6 +19,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
+	"strings"
+	"time"
+
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/aws/aws-sdk-go-v2/service/ec2/types"
@@ -32,9 +36,6 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/csi-translation-lib/plugins"
 	"k8s.io/klog/v2"
-	"regexp"
-	"strings"
-	"time"
 )
 
 type EC2Client interface {
@@ -93,7 +94,7 @@ var validSCProvisionerRegexp = regexp.MustCompile(`[a-z0-9]([-a-z0-9]*[a-z0-9])?
 
 func (m *Migrator) validateK8s(ctx context.Context) error {
 	// ensure our storage class exists, and pull the provisioner off of it
-	newSc, err := k8s.GetAndValidateStorageClass(ctx, m.kubeClient, m.cfg.NewStorageClassName)
+	newSc, err := k8s.GetAndValidateStorageClass(ctx, m.kubeClient, m.cfg.NewStorageClassName, true)
 	if err != nil {
 		return fmt.Errorf("validating new storage class, %s", err)
 	}
@@ -119,7 +120,7 @@ func (m *Migrator) validateK8s(ctx context.Context) error {
 		return fmt.Errorf("PVC is already using storage class of %s", m.cfg.NewStorageClassName)
 	}
 
-	oldSc, err := k8s.GetAndValidateStorageClass(ctx, m.kubeClient, m.oldStorageClassName)
+	oldSc, err := k8s.GetAndValidateStorageClass(ctx, m.kubeClient, m.oldStorageClassName, false)
 	if err != nil {
 		return fmt.Errorf("unable to get old storage class, %s", err)
 	}
@@ -333,15 +334,31 @@ func (m *Migrator) Execute(ctx context.Context) error {
 	k8s.ClearMetadata(&pv.ObjectMeta)
 	pv.Status = v1.PersistentVolumeStatus{}
 
-	// map from any legacy zone topology selector to the standard name
-	if pv.Spec.NodeAffinity != nil && pv.Spec.NodeAffinity.Required != nil {
-		for i := 0; i < len(pv.Spec.NodeAffinity.Required.NodeSelectorTerms); i++ {
-			for j := 0; j < len(pv.Spec.NodeAffinity.Required.NodeSelectorTerms[i].MatchExpressions); j++ {
-				if pv.Spec.NodeAffinity.Required.NodeSelectorTerms[i].MatchExpressions[j].Key == "topology.ebs.csi.aws.com/zone" {
-					pv.Spec.NodeAffinity.Required.NodeSelectorTerms[i].MatchExpressions[j].Key = "topology.kubernetes.io/zone"
-				}
+	// Ensure node affinity structure exists
+	if pv.Spec.NodeAffinity == nil {
+		pv.Spec.NodeAffinity = &v1.VolumeNodeAffinity{Required: &v1.NodeSelector{NodeSelectorTerms: []v1.NodeSelectorTerm{{}}}}
+	} else if pv.Spec.NodeAffinity.Required == nil {
+		pv.Spec.NodeAffinity.Required = &v1.NodeSelector{NodeSelectorTerms: []v1.NodeSelectorTerm{{}}}
+	} else if len(pv.Spec.NodeAffinity.Required.NodeSelectorTerms) == 0 {
+		pv.Spec.NodeAffinity.Required.NodeSelectorTerms = []v1.NodeSelectorTerm{{}}
+	}
+
+	for i := range pv.Spec.NodeAffinity.Required.NodeSelectorTerms {
+		// Update legacy topology keys
+		for j := range pv.Spec.NodeAffinity.Required.NodeSelectorTerms[i].MatchExpressions {
+			if pv.Spec.NodeAffinity.Required.NodeSelectorTerms[i].MatchExpressions[j].Key == "topology.ebs.csi.aws.com/zone" {
+				pv.Spec.NodeAffinity.Required.NodeSelectorTerms[i].MatchExpressions[j].Key = "topology.kubernetes.io/zone"
 			}
 		}
+		// Add compute-type requirement
+		pv.Spec.NodeAffinity.Required.NodeSelectorTerms[i].MatchExpressions = append(
+			pv.Spec.NodeAffinity.Required.NodeSelectorTerms[i].MatchExpressions,
+			v1.NodeSelectorRequirement{
+				Key:      "eks.amazonaws.com/compute-type",
+				Operator: v1.NodeSelectorOpIn,
+				Values:   []string{"auto"},
+			},
+		)
 	}
 
 	// change the storage class from the old to the new value everywhere
