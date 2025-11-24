@@ -1069,7 +1069,7 @@ The Amazon eks-auto-mode-ebs-migration-tool Product includes the following third
 
 * Name: github.com/aws/aws-sdk-go-v2/internal/endpoints/v2
 * Version: v2.7.14
-* License: [Apache-2.0](https://github.com/aws/aws-sdk-go-v2/blob/internal/endpoints/v2.7.14/internal/endpoints/LICENSE.txt)
+* License: [Apache-2.0](https://github.com/aws/aws-sdk-go-v2/blob/internal/endpoints/v2.7.14/internal/endpoints/v2/LICENSE.txt)
 
 ```
 
