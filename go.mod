@@ -8,7 +8,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/ec2 v1.274.0
 	github.com/aws/aws-sdk-go-v2/service/eks v1.75.0
 	github.com/aws/smithy-go v1.23.2
-	github.com/samber/lo v1.51.0
+	github.com/samber/lo v1.52.0
 	k8s.io/api v0.34.2
 	k8s.io/apimachinery v0.34.2
 	k8s.io/client-go v0.34.2
