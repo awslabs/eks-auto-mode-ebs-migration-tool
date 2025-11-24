@@ -18,14 +18,17 @@ package k8s
 import (
 	"context"
 	"errors"
-	kerrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/runtime/schema"
+	"strings"
 	"testing"
 	"time"
 
 	authv1 "k8s.io/api/authorization/v1"
+	v1 "k8s.io/api/core/v1"
+	storagev1 "k8s.io/api/storage/v1"
+	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/fake"
 	cgtesting "k8s.io/client-go/testing"
@@ -74,7 +77,7 @@ func TestSanitizeDriverName(t *testing.T) {
 		},
 		{
 			name:     "eks auto mode driver name",
-			driver:   "ebs.csi.eks.amazonaws.com",
+			driver:   AutoModeEBSProvisioner,
 			expected: "ebs-csi-eks-amazonaws-com",
 		},
 	}
@@ -288,5 +291,42 @@ func TestWaitForNotFound(t *testing.T) {
 				t.Errorf("WaitForNotFound() expected no error but got: %v", err)
 			}
 		})
+	}
+}
+
+func TestGetAndValidateStorageClassWithWrongTopology(t *testing.T) {
+	ctx := context.Background()
+	waitForFirstConsumer := storagev1.VolumeBindingWaitForFirstConsumer
+
+	// Storage class with AllowedTopologies but WITHOUT the required compute-type
+	sc := &storagev1.StorageClass{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test-sc",
+		},
+		Provisioner:       AutoModeEBSProvisioner,
+		VolumeBindingMode: &waitForFirstConsumer,
+		AllowedTopologies: []v1.TopologySelectorTerm{
+			{
+				MatchLabelExpressions: []v1.TopologySelectorLabelRequirement{
+					{
+						Key:    "topology.kubernetes.io/zone",
+						Values: []string{"us-west-2a"},
+					},
+				},
+			},
+		},
+	}
+
+	client := fake.NewClientset(sc)
+
+	// This should fail because AllowedTopologies exists but doesn't contain compute-type
+	_, err := GetAndValidateStorageClass(ctx, client, "test-sc", true)
+
+	if err == nil {
+		t.Fatal("Expected validation to fail for storage class with wrong topology, but it passed")
+	}
+
+	if !strings.Contains(err.Error(), "storageClass allowed topologies must be set") {
+		t.Errorf("Expected error about topologies, got: %v", err)
 	}
 }

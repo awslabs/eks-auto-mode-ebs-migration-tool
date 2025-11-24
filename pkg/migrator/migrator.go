@@ -93,8 +93,15 @@ func (m *Migrator) ValidatePreconditions(ctx context.Context) error {
 var validSCProvisionerRegexp = regexp.MustCompile(`[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*`)
 
 func (m *Migrator) validateK8s(ctx context.Context) error {
-	// ensure our storage class exists, and pull the provisioner off of it
-	newSc, err := k8s.GetAndValidateStorageClass(ctx, m.kubeClient, m.cfg.NewStorageClassName, true)
+	// First get the storage class without validation to check the provisioner
+	newSc, err := m.kubeClient.StorageV1().StorageClasses().Get(ctx, m.cfg.NewStorageClassName, metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("unable to find storage class %s, %w", m.cfg.NewStorageClassName, err)
+	}
+	
+	// Only validate Auto Mode requirements if migrating to Auto Mode
+	validateAutoSC := newSc.Provisioner == k8s.AutoModeEBSProvisioner
+	newSc, err = k8s.GetAndValidateStorageClass(ctx, m.kubeClient, m.cfg.NewStorageClassName, validateAutoSC)
 	if err != nil {
 		return fmt.Errorf("validating new storage class, %s", err)
 	}
@@ -350,15 +357,27 @@ func (m *Migrator) Execute(ctx context.Context) error {
 				pv.Spec.NodeAffinity.Required.NodeSelectorTerms[i].MatchExpressions[j].Key = "topology.kubernetes.io/zone"
 			}
 		}
-		// Add compute-type requirement
-		pv.Spec.NodeAffinity.Required.NodeSelectorTerms[i].MatchExpressions = append(
-			pv.Spec.NodeAffinity.Required.NodeSelectorTerms[i].MatchExpressions,
-			v1.NodeSelectorRequirement{
-				Key:      "eks.amazonaws.com/compute-type",
-				Operator: v1.NodeSelectorOpIn,
-				Values:   []string{"auto"},
-			},
-		)
+		
+		// Remove existing Auto Mode compute-type requirement
+		filtered := []v1.NodeSelectorRequirement{}
+		for _, expr := range pv.Spec.NodeAffinity.Required.NodeSelectorTerms[i].MatchExpressions {
+			if expr.Key != "eks.amazonaws.com/compute-type" {
+				filtered = append(filtered, expr)
+			}
+		}
+		pv.Spec.NodeAffinity.Required.NodeSelectorTerms[i].MatchExpressions = filtered
+		
+		// Add compute-type requirement only if migrating to Auto Mode
+		if m.newStorageClassProvisioner == k8s.AutoModeEBSProvisioner {
+			pv.Spec.NodeAffinity.Required.NodeSelectorTerms[i].MatchExpressions = append(
+				pv.Spec.NodeAffinity.Required.NodeSelectorTerms[i].MatchExpressions,
+				v1.NodeSelectorRequirement{
+					Key:      "eks.amazonaws.com/compute-type",
+					Operator: v1.NodeSelectorOpIn,
+					Values:   []string{"auto"},
+				},
+			)
+		}
 	}
 
 	// change the storage class from the old to the new value everywhere
