@@ -31,6 +31,9 @@ import (
 	"k8s.io/client-go/kubernetes"
 )
 
+const AutoModeEBSProvisioner = "ebs.csi.eks.amazonaws.com"
+
+
 // SanitizeDriverName sanitizes provided driver name, from https://github.com/kubernetes-csi/external-attacher/blob/master/pkg/controller/util.go#L128
 func SanitizeDriverName(driver string) string {
 	re := regexp.MustCompile("[^a-zA-Z0-9-]")
@@ -59,10 +62,11 @@ func GetAndValidateStorageClass(ctx context.Context, cs kubernetes.Interface, st
 		return nil, fmt.Errorf("PVC volume binding mode must be set to %s", storagev1.VolumeBindingWaitForFirstConsumer)
 	}
 	if validateAutoSC {
-		if sc.Provisioner != "ebs.csi.eks.amazonaws.com" {
-			return nil, fmt.Errorf("storageClass provisioner must be set to ebs.csi.eks.amazonaws.com")
+		if sc.Provisioner != AutoModeEBSProvisioner {
+			return nil, fmt.Errorf("storageClass provisioner must be set to %s", AutoModeEBSProvisioner)
 		}
-		if len(sc.AllowedTopologies) == 0 && !lo.ContainsBy(sc.AllowedTopologies, func(term v1.TopologySelectorTerm) bool {
+		// Fail if topologies are defined but don't contain the required compute-type
+		if len(sc.AllowedTopologies) > 0 && !lo.ContainsBy(sc.AllowedTopologies, func(term v1.TopologySelectorTerm) bool {
 			return lo.ContainsBy(term.MatchLabelExpressions, func(exp v1.TopologySelectorLabelRequirement) bool {
 				return exp.Key == "eks.amazonaws.com/compute-type" &&
 					lo.Contains(exp.Values, "auto")
