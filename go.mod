@@ -9,10 +9,10 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/eks v1.84.5
 	github.com/aws/smithy-go v1.27.1
 	github.com/samber/lo v1.53.0
-	k8s.io/api v0.36.1
-	k8s.io/apimachinery v0.36.1
-	k8s.io/client-go v0.36.1
-	k8s.io/csi-translation-lib v0.36.1
+	k8s.io/api v0.36.2
+	k8s.io/apimachinery v0.36.2
+	k8s.io/client-go v0.36.2
+	k8s.io/csi-translation-lib v0.36.2
 	k8s.io/klog/v2 v2.140.0
 )
 
