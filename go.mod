@@ -5,9 +5,9 @@ go 1.26.0
 require (
 	github.com/aws/aws-sdk-go-v2 v1.42.0
 	github.com/aws/aws-sdk-go-v2/config v1.32.25
-	github.com/aws/aws-sdk-go-v2/service/ec2 v1.307.0
-	github.com/aws/aws-sdk-go-v2/service/eks v1.86.0
-	github.com/aws/smithy-go v1.27.2
+	github.com/aws/aws-sdk-go-v2/service/ec2 v1.308.0
+	github.com/aws/aws-sdk-go-v2/service/eks v1.87.0
+	github.com/aws/smithy-go v1.27.3
 	github.com/samber/lo v1.53.0
 	k8s.io/api v0.36.2
 	k8s.io/apimachinery v0.36.2
